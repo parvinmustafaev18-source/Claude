@@ -51,15 +51,15 @@
   </PropertyGroup>
   <ItemGroup>
     <Reference Include="accoremgd">
-      <HintPath>..\..\Автокад 2024\AutoCAD 2024\accoremgd.dll</HintPath>
+      <HintPath>C:\Program Files\Autodesk\AutoCAD 2019\accoremgd.dll</HintPath>
       <Private>False</Private>
     </Reference>
     <Reference Include="acdbmgd">
-      <HintPath>..\..\Автокад 2024\AutoCAD 2024\acdbmgd.dll</HintPath>
+      <HintPath>C:\Program Files\Autodesk\AutoCAD 2019\acdbmgd.dll</HintPath>
       <Private>False</Private>
     </Reference>
     <Reference Include="acmgd">
-      <HintPath>..\..\Автокад 2024\AutoCAD 2024\acmgd.dll</HintPath>
+      <HintPath>C:\Program Files\Autodesk\AutoCAD 2019\acmgd.dll</HintPath>
       <Private>False</Private>
     </Reference>
     <Reference Include="System" />
@@ -72,11 +72,21 @@
     <Reference Include="System.Xml" />
   </ItemGroup>
   <ItemGroup>
-    <Compile Include="Class1.cs" />
+    <Compile Include="Commands.cs" />
+    <Compile Include="Geometry.cs" />
+    <Compile Include="LiraExport.cs" />
+    <Compile Include="QuadMesh.cs" />
+    <Compile Include="SpatialGrid.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />
   </ItemGroup>
   <ItemGroup>
     <None Include="packages.config" />
   </ItemGroup>
   <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
+  <!-- Свежая DLL копируется в autoloader-bundle: AutoCAD подхватывает плагин при
+       старте сам, без NETLOAD. Если AutoCAD открыт, DLL занята и копирование
+       упадёт — это сигнал закрыть AutoCAD и пересобрать. -->
+  <PropertyGroup>
+    <PostBuildEvent>xcopy /Y "$(TargetPath)" "$(APPDATA)\Autodesk\ApplicationPlugins\MeshPlugin.bundle\Contents\"</PostBuildEvent>
+  </PropertyGroup>
 </Project>
