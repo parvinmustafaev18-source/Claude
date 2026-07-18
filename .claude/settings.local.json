@@ -1,0 +1,11 @@
+{
+  "permissions": {
+    "allow": [
+      "PowerShell(& \"C:\\\\Program Files\\\\Microsoft Visual Studio\\\\2022\\\\Community\\\\MSBuild\\\\Current\\\\Bin\\\\MSBuild.exe\" \"F:\\\\������\\\\MeshPlugin\\\\MeshPlugin.sln\" /p:Configuration=Debug /p:Platform=x64 /nologo /v:minimal)",
+      "PowerShell(& \"C:\\\\Program Files\\\\Microsoft Visual Studio\\\\2022\\\\Community\\\\MSBuild\\\\Current\\\\Bin\\\\MSBuild.exe\" \"F:\\\\������\\\\MeshPlugin\\\\MeshPlugin.csproj\" /p:Platform=x64 /p:Configuration=Debug /nologo /v:minimal)",
+      "PowerShell(& \"C:\\\\Program Files\\\\Microsoft Visual Studio\\\\2022\\\\Community\\\\MSBuild\\\\Current\\\\Bin\\\\MSBuild.exe\" \"F:\\\\������\\\\MeshPlugin\\\\MeshPlugin.csproj\" /p:Configuration=Debug /p:Platform=x64 /v:m)",
+      "WebSearch",
+      "WebFetch(domain:help.liraland.ru)"
+    ]
+  }
+}

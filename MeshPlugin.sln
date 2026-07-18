@@ -1,0 +1,31 @@
+﻿
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.14.36414.22 d17.14
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "MeshPlugin", "MeshPlugin.csproj", "{AA3EE873-94F6-49CC-91B1-702CCE846147}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Debug|x64 = Debug|x64
+		Release|Any CPU = Release|Any CPU
+		Release|x64 = Release|x64
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{AA3EE873-94F6-49CC-91B1-702CCE846147}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{AA3EE873-94F6-49CC-91B1-702CCE846147}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{AA3EE873-94F6-49CC-91B1-702CCE846147}.Debug|x64.ActiveCfg = Debug|x64
+		{AA3EE873-94F6-49CC-91B1-702CCE846147}.Debug|x64.Build.0 = Debug|x64
+		{AA3EE873-94F6-49CC-91B1-702CCE846147}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{AA3EE873-94F6-49CC-91B1-702CCE846147}.Release|Any CPU.Build.0 = Release|Any CPU
+		{AA3EE873-94F6-49CC-91B1-702CCE846147}.Release|x64.ActiveCfg = Release|x64
+		{AA3EE873-94F6-49CC-91B1-702CCE846147}.Release|x64.Build.0 = Release|x64
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ExtensibilityGlobals) = postSolution
+		SolutionGuid = {609D587A-D9BB-4C33-A77F-2B1BA60D1370}
+	EndGlobalSection
+EndGlobal
