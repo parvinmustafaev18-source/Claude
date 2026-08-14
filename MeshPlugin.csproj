@@ -122,6 +122,8 @@
   <PropertyGroup>
     <PostBuildEvent>if not exist "$(BundleDir)\Contents\" mkdir "$(BundleDir)\Contents"
 xcopy /Y "$(ProjectDir)bundle\PackageContents.xml" "$(BundleDir)\"
-xcopy /Y "$(TargetPath)" "$(BundleDir)\Contents\" || (echo. &amp;&amp; echo ERROR: cannot copy MeshPlugin.dll into the AutoCAD bundle - the file is locked. Close AutoCAD and rebuild, otherwise AutoCAD will keep running the OLD build. &amp;&amp; exit 1)</PostBuildEvent>
+xcopy /Y "$(TargetPath)" "$(BundleDir)\Contents\" || (echo. &amp;&amp; echo ERROR: cannot copy MeshPlugin.dll into the AutoCAD bundle - the file is locked. Close AutoCAD and rebuild, otherwise AutoCAD will keep running the OLD build. &amp;&amp; exit 1)
+if not exist "$(ProjectDir)dist\" mkdir "$(ProjectDir)dist"
+xcopy /Y "$(TargetPath)" "$(ProjectDir)dist\"</PostBuildEvent>
   </PropertyGroup>
 </Project>
