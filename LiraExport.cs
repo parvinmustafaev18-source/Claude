@@ -20,6 +20,7 @@ namespace MeshPlugin
         {
             Document doc = Application.DocumentManager.MdiActiveDocument;
             Editor ed = doc.Editor;
+            EchoCommandStart(ed, "MESHEXPORTTXT");
             Database db = doc.Database;
 
             PromptEntityOptions peo = new PromptEntityOptions("\nВыберите контур плиты (полилинию): ");
@@ -39,11 +40,9 @@ namespace MeshPlugin
             using (Transaction trLayer = db.TransactionManager.StartTransaction())
             {
                 Entity slabEnt = trLayer.GetObject(per.ObjectId, OpenMode.ForRead) as Entity;
-                var mH = System.Text.RegularExpressions.Regex.Match(
-                    slabEnt != null ? slabEnt.Layer : "", @"FOUNDATION_SLABS\(H-([\d.,]+)\)");
+                var mH = SlabThicknessRegex.Match(slabEnt != null ? slabEnt.Layer : "");
                 if (mH.Success)
-                    thicknessMm = double.Parse(mH.Groups[1].Value.Replace(',', '.'),
-                        System.Globalization.CultureInfo.InvariantCulture);
+                    thicknessMm = ParseLayerNumber(mH.Groups[1].Value);
             }
 
             if (thicknessMm > 0)
@@ -97,6 +96,16 @@ namespace MeshPlugin
             if (concreteClass != "Manual")
                 ed.WriteMessage($"\nБетон {concreteClass}: E = {elasticModulus:0.###e+0} т/м²\n");
 
+            // Объёмный вес бетона (R0) — одно значение на всю задачу,
+            // пишется в каждую жёсткость документа 3.
+            PromptDoubleOptions pdoRo = new PromptDoubleOptions("\nОбъёмный вес бетона R0, т/м³: ");
+            pdoRo.DefaultValue = 2.5;
+            pdoRo.AllowNegative = false;
+            pdoRo.AllowZero = false;
+            PromptDoubleResult pdrRo = ed.GetDouble(pdoRo);
+            if (pdrRo.Status != PromptStatus.OK) return;
+            double unitWeight = pdrRo.Value;
+
             PromptDoubleOptions pdoFH = new PromptDoubleOptions("\nВысота этажа (стен и пилонов вверх от плиты), мм: ");
             pdoFH.DefaultValue = 3000.0;
             pdoFH.AllowNegative = false;
@@ -123,7 +132,15 @@ namespace MeshPlugin
                     ed.WriteMessage("\nНужен замкнутый контур (полилиния).\n");
                     return;
                 }
-                if (!ValidateContour(pline, ed, tr, db, out var contourPts)) return;
+                // Старые маркеры проблем стираются при каждом запуске, чтобы не копились
+                EraseMarksOnLayer(tr, db, ProblemLayerName);
+
+                // Дуги и полилинии вне плоскости XY читаются как ломаные в WCS.
+                WarnBadPolylines(tr, db, ed);
+
+                // При отказе валидации транзакция коммитится: до этого места команда
+                // ничего не меняла, а маркеры разрывов/углов без коммита откатились бы.
+                if (!ValidateContour(pline, ed, tr, db, out var contourPts)) { tr.Commit(); return; }
                 EnsureCcw(contourPts);
 
                 // Отрезки: контур плиты + линии сетки + стены. Центры пилонов запоминаем,
@@ -143,9 +160,28 @@ namespace MeshPlugin
                 var columnDims = new List<double[]>();
                 int columnsWithoutDims = 0;
 
-                // Стены: исходные отрезки + толщина из имени слоя WALLS(H-..)
+                // Отверстия (проёмы): контуры со слоя MESH_HOLES. Их стороны попадают в
+                // планарный граф (элементы плиты смыкаются на кромке отверстия), а сама
+                // грань отверстия ниже исключается из заливки элементами.
+                var holePolys = new List<List<Point2d>>();
+                int holeEntCount = 0;      // всего объектов на слое MESH_HOLES (любых)
+                int holeOpenPolyCount = 0; // из них незамкнутых полилиний
+
+                // Дверные проёмы в стенах: отрезки на слое WALL_DOORS(H-<высота>),
+                // нарисованные поверх оси стены на длину проёма. В экспорте кусок стены
+                // под таким отрезком не выдавливается снизу до высоты двери — остаётся
+                // только перемычка выше проёма.
+                var doorOrig = new List<Point2d[]>();
+                var doorHeights = new List<double>();
+
+                // Стены: исходные отрезки + толщина из имени слоя WALLS(H-..).
+                // Дополнительно помечаем, является ли отрезок осью пилона (суффикс PILON),
+                // и ключ типоразмера пилона (толщина x длина) — по нему пилону выдаётся
+                // отдельный номер жёсткости, чтобы он не слился со стеной той же толщины.
                 var wallOrig = new List<Point2d[]>();
                 var wallOrigThickness = new List<double>();
+                var wallOrigIsPylon = new List<bool>();
+                var wallOrigSizeKey = new List<string>();
 
                 BlockTableRecord btr = (BlockTableRecord)tr.GetObject(db.CurrentSpaceId, OpenMode.ForRead);
                 foreach (ObjectId id in btr)
@@ -156,7 +192,7 @@ namespace MeshPlugin
                     if (ent is DBPoint dbp && IsColumnLayer(ent.Layer))
                     {
                         columnCenters.Add(new Point2d(dbp.Position.X, dbp.Position.Y));
-                        var m = System.Text.RegularExpressions.Regex.Match(ent.Layer, @"B-([\d.,]+)\s+H-([\d.,]+)");
+                        var m = ColumnDimsRegex.Match(ent.Layer);
                         if (m.Success)
                         {
                             columnDims.Add(new double[] { ParseNum(m.Groups[1].Value), ParseNum(m.Groups[2].Value) });
@@ -169,16 +205,64 @@ namespace MeshPlugin
                         continue;
                     }
 
-                    bool isWall = ent.Layer.StartsWith("WALLS(H-");
+                    if (ent.Layer == HoleLayerName)
+                    {
+                        holeEntCount++;
+                        if (ent is Polyline hpl)
+                        {
+                            if (!hpl.Closed) holeOpenPolyCount++;
+                            else
+                            {
+                                var hv = GetPolylineVertices(hpl);
+                                if (hv.Count >= 3)
+                                {
+                                    EnsureCcw(hv);
+                                    holePolys.Add(hv);
+                                    int hc = hv.Count;
+                                    for (int i = 0; i < hc; i++)
+                                        segments.Add(new Point2d[] { hv[i], hv[(i + 1) % hc] });
+                                }
+                            }
+                        }
+                        continue;
+                    }
+
+                    if (IsDoorLayer(ent.Layer))
+                    {
+                        // Высота из имени слоя; слой без "H-" — дверь стандартной высоты.
+                        double dh;
+                        if (!TryParseLayerHeight(ent.Layer, out dh)) dh = 2100.0;
+                        if (ent is Line dln)
+                        {
+                            doorOrig.Add(new Point2d[] {
+                                new Point2d(dln.StartPoint.X, dln.StartPoint.Y),
+                                new Point2d(dln.EndPoint.X, dln.EndPoint.Y) });
+                            doorHeights.Add(dh);
+                        }
+                        else if (ent is Polyline dpl)
+                        {
+                            var dv = GetPolylineVertices(dpl);
+                            int dc = dpl.Closed ? dv.Count : dv.Count - 1;
+                            for (int i = 0; i < dc; i++)
+                            {
+                                doorOrig.Add(new Point2d[] { dv[i], dv[(i + 1) % dv.Count] });
+                                doorHeights.Add(dh);
+                            }
+                        }
+                        continue;
+                    }
+
+                    bool isWall = IsWallLayer(ent.Layer);
+                    bool isPylon = IsPylonLayer(ent.Layer);
                     bool meshLayer = ent.Layer == TriangulationLayerName || isWall;
                     if (!meshLayer) continue;
 
                     double wallT = 200.0;
-                    if (isWall)
-                    {
-                        var mw = System.Text.RegularExpressions.Regex.Match(ent.Layer, @"H-([\d.,]+)");
-                        if (mw.Success) wallT = ParseNum(mw.Groups[1].Value);
-                    }
+                    if (isWall) TryParseLayerHeight(ent.Layer, out wallT);
+
+                    // Типоразмер пилона = толщина (короткая сторона) x длина оси (длинная).
+                    string PylonKey(Point2d[] s) =>
+                        Math.Round(wallT, 1) + "x" + Math.Round(s[0].GetDistanceTo(s[1]), 0);
 
                     if (ent is Line line)
                     {
@@ -188,7 +272,12 @@ namespace MeshPlugin
                             new Point2d(line.EndPoint.X, line.EndPoint.Y)
                         };
                         segments.Add(seg);
-                        if (isWall) { wallOrig.Add(seg); wallOrigThickness.Add(wallT); }
+                        if (isWall)
+                        {
+                            wallOrig.Add(seg); wallOrigThickness.Add(wallT);
+                            wallOrigIsPylon.Add(isPylon);
+                            wallOrigSizeKey.Add(isPylon ? PylonKey(seg) : null);
+                        }
                     }
                     else if (ent is Polyline wp)
                     {
@@ -198,12 +287,33 @@ namespace MeshPlugin
                         {
                             var seg = new Point2d[] { verts[i], verts[(i + 1) % verts.Count] };
                             segments.Add(seg);
-                            if (isWall) { wallOrig.Add(seg); wallOrigThickness.Add(wallT); }
+                            if (isWall)
+                            {
+                                wallOrig.Add(seg); wallOrigThickness.Add(wallT);
+                                wallOrigIsPylon.Add(isPylon);
+                                wallOrigSizeKey.Add(isPylon ? PylonKey(seg) : null);
+                            }
                         }
                     }
                 }
 
+                ed.WriteMessage($"\n[диагностика отверстий] объектов на слое {HoleLayerName}: {holeEntCount}; из них замкнутых контуров принято: {holePolys.Count}, незамкнутых полилиний: {holeOpenPolyCount}\n");
+
                 segments = DeduplicateSegments(segments);
+
+                // Косяки дверных проёмов: стену режем ровно в концах дверного отрезка.
+                // Делать это в MESHQUADMESH бесполезно — вдоль оси стены линий сетки нет
+                // (ResolveOverlappingSegments снимает их как перекрытые стеной), резать
+                // там нечего. Здесь стена присутствует в графе как обычный отрезок, и
+                // после разрезки кусок стены точно совпадает с проёмом.
+                int doorJambSplits = 0;
+                if (doorOrig.Count > 0)
+                {
+                    var jambs = new List<Point2d>();
+                    foreach (var d in doorOrig) { jambs.Add(d[0]); jambs.Add(d[1]); }
+                    segments = SplitSegmentsAtPoints(segments, jambs, MeshTol.DoorOnAxis, out doorJambSplits);
+                }
+
                 segments = SplitSegmentsAtNodes(segments, 500.0, out _);
                 segments = DeduplicateSegments(segments);
 
@@ -221,41 +331,87 @@ namespace MeshPlugin
 
                 var faces = ExtractPlanarFaces(nodes, edges);
 
-                // Глобальные 3D-узлы задачи (плита z=0, стены и пилоны растут вверх)
-                var nodes3 = new List<double[]>();
-                var node3Index = new Dictionary<string, int>();
-                int Node3(double x, double y, double z)
-                {
-                    string key = Math.Round(x, 3) + "_" + Math.Round(y, 3) + "_" + Math.Round(z, 3);
-                    int idx;
-                    if (!node3Index.TryGetValue(key, out idx))
-                    {
-                        idx = nodes3.Count;
-                        nodes3.Add(new double[] { x, y, z });
-                        node3Index[key] = idx;
-                    }
-                    return idx;
-                }
+                // Глобальные 3D-узлы задачи (плита z=0, стены и пилоны растут вверх).
+                // Узлы сливаются по допуску: низ стены обязан попасть ровно в узел
+                // плиты, иначе стена в ЛИРЕ стоит на собственных узлах и
+                // «проваливается» сквозь плиту.
+                var ni3 = new NodeIndex3();
+                var nodes3 = ni3.Nodes;
+                int Node3(double x, double y, double z) { return ni3.GetNode(x, y, z); }
                 int SlabNode(int i2d) { return Node3(nodes[i2d].X, nodes[i2d].Y, 0.0); }
 
                 // Жёсткости: 1 — плита; далее стены по толщинам; далее сечения пилонов
-                var wallStiffIds = new Dictionary<double, int>();
+                // Жёсткости пластин: ключ составной — "W<толщина>" для стены и
+                // "P<толщина>x<длина>" для пилона, поэтому пилон получает СВОЙ номер
+                // жёсткости даже при толщине, совпадающей со стеной (ЛИРА принимает
+                // одинаковые по параметрам жёсткости под разными номерами). Имени или
+                // комментария у жёсткости в текстовом формате нет, поэтому расшифровка
+                // номеров пишется в командную строку и в файл легенды рядом с задачей.
+                var wallStiffIds = new Dictionary<string, int>();
+                var wallStiffThk = new Dictionary<int, double>();   // № жёсткости -> толщина, мм
+                var wallStiffTitle = new Dictionary<int, string>(); // № жёсткости -> расшифровка
                 var colStiffIds = new Dictionary<string, int>();
                 var colStiffDims = new List<double[]>();
                 int nextStiff = 2;
 
                 // Элементы: {тип КЭ, № жёсткости, узлы...}
                 var elements = new List<int[]>();
+
                 int failedFaces = 0, fanFaces = 0;
+                var lostFaceCenters = new List<string>();
+                var lostFacePts = new List<Point2d>();
 
                 // Грани -> пластины плиты: 3 узла -> КЭ 42, 4 узла -> КЭ 44 (порядок узлов
                 // КЭ 44 — "змейкой": p0 p1 p3 p2), больше 4 (висячие узлы) -> триангуляция.
                 // Грань с центром пилона внутри разбивается веером треугольников вокруг
                 // центра — центр становится узлом сетки, к нему цепляется стержень пилона.
-                foreach (var face in faces)
+                int spikeFans = 0, multiSpikeFaces = 0;
+                foreach (var rawFace in faces)
                 {
+                    // Конец стены внутри ячейки — тупиковое ребро графа: обход грани
+                    // проходит по нему туда и обратно, в грани появляется шип
+                    // "... B, S, B ...". Такая грань не триангулировалась — под концом
+                    // стены оставалась дыра в плите. Шип вырезается, грань разбивается
+                    // веером треугольников вокруг конца стены S — узел стены связан
+                    // с пластинами плиты.
+                    var face = new List<int>(rawFace);
+                    var spikeTips = new List<int>();
+                    bool spikeRemoved = true;
+                    while (spikeRemoved && face.Count >= 3)
+                    {
+                        spikeRemoved = false;
+                        int fm = face.Count;
+                        for (int i = 0; i < fm; i++)
+                        {
+                            if (face[(i - 1 + fm) % fm] != face[(i + 1) % fm]) continue;
+                            spikeTips.Add(face[i]);
+                            int iNext = (i + 1) % fm;
+                            if (iNext > i) { face.RemoveAt(iNext); face.RemoveAt(i); }
+                            else { face.RemoveAt(i); face.RemoveAt(iNext); }
+                            spikeRemoved = true;
+                            break;
+                        }
+                    }
+                    if (face.Count < 3) continue;
+
                     var poly = new List<Point2d>();
                     foreach (int idx in face) poly.Add(nodes[idx]);
+
+                    if (spikeTips.Count > 0)
+                    {
+                        if (spikeTips.Count > 1) multiSpikeFaces++;
+                        Point2d s = nodes[spikeTips[0]];
+                        int sNode = Node3(s.X, s.Y, 0.0);
+                        for (int i = 0; i < face.Count; i++)
+                        {
+                            Point2d va = nodes[face[i]];
+                            Point2d vb = nodes[face[(i + 1) % face.Count]];
+                            if (Math.Abs(CrossProduct(va, vb, s)) < 1.0) continue; // вырожденный треугольник
+                            elements.Add(new int[] { 42, 1, sNode, SlabNode(face[i]), SlabNode(face[(i + 1) % face.Count]) });
+                        }
+                        spikeFans++;
+                        continue;
+                    }
 
                     int colIdx = -1;
                     for (int c = 0; c < columnCenters.Count; c++)
@@ -274,7 +430,18 @@ namespace MeshPlugin
                     }
                     else if (face.Count == 4)
                     {
-                        elements.Add(new int[] { 44, 1, SlabNode(face[0]), SlabNode(face[1]), SlabNode(face[3]), SlabNode(face[2]) });
+                        // Прямоугольная ячейка -> КЭ 41 (прямоугольный элемент оболочки),
+                        // прочие четырёхугольники -> КЭ 44. Порядок узлов одинаков ("змейкой").
+                        bool rect = true;
+                        for (int i = 0; i < 4 && rect; i++)
+                        {
+                            Point2d pp = poly[(i + 3) % 4], pc = poly[i], pn = poly[(i + 1) % 4];
+                            double l1 = pc.GetDistanceTo(pp), l2 = pc.GetDistanceTo(pn);
+                            if (l1 < 1e-9 || l2 < 1e-9) { rect = false; break; }
+                            double dot = ((pp.X - pc.X) * (pn.X - pc.X) + (pp.Y - pc.Y) * (pn.Y - pc.Y)) / (l1 * l2);
+                            if (Math.Abs(dot) > 1e-3) rect = false;
+                        }
+                        elements.Add(new int[] { rect ? 41 : 44, 1, SlabNode(face[0]), SlabNode(face[1]), SlabNode(face[3]), SlabNode(face[2]) });
                     }
                     else
                     {
@@ -282,6 +449,52 @@ namespace MeshPlugin
                         foreach (var t in TriangulateSimplePolygon(poly, ref failed))
                             elements.Add(new int[] { 42, 1, Node3(t[0].X, t[0].Y, 0), Node3(t[1].X, t[1].Y, 0), Node3(t[2].X, t[2].Y, 0) });
                         failedFaces += failed;
+                        if (failed > 0)
+                        {
+                            Point2d fc = PolygonCentroid(poly);
+                            lostFaceCenters.Add($"({fc.X:0}, {fc.Y:0})");
+                            lostFacePts.Add(fc);
+                        }
+                    }
+                }
+
+                if (spikeFans > 0)
+                    ed.WriteMessage($"\nКонцов стен внутри ячеек, врезанных в плиту веером треугольников: {spikeFans}\n");
+                if (multiSpikeFaces > 0)
+                    ed.WriteMessage($"\nВНИМАНИЕ: ячеек с несколькими тупиковыми концами стен: {multiSpikeFaces} — связан только первый конец, проверьте сетку у этих стен\n");
+
+                // ОТВЕРСТИЯ (простое и надёжное правило): удаляем готовые элементы плиты,
+                // чей ЦЕНТР попал внутрь контура отверстия. Центр отдельного КЭ (тр-к или
+                // выпуклый 4-угольник) всегда лежит строго внутри него, поэтому тест не
+                // срывается на вогнутых/разрезанных стеной областях. Элемент либо целиком
+                // в отверстии (удаляем), либо целиком снаружи (оставляем) — узлы сетки
+                // сидят на кромке проёма. Стен это не касается: они добавляются ниже.
+                int holeElemsRemoved = 0;
+                if (holePolys.Count > 0)
+                {
+                    var keptElems = new List<int[]>();
+                    foreach (var el in elements)
+                    {
+                        double cx = 0, cy = 0;
+                        int vcount = el.Length - 2;
+                        for (int k = 2; k < el.Length; k++) { cx += nodes3[el[k]][0]; cy += nodes3[el[k]][1]; }
+                        Point2d ec = new Point2d(cx / vcount, cy / vcount);
+                        bool inHole = false;
+                        foreach (var hp in holePolys)
+                            if (IsPointInPolygon(ec, hp)) { inHole = true; break; }
+                        if (inHole) { holeElemsRemoved++; continue; }
+                        keptElems.Add(el);
+                    }
+                    elements = keptElems;
+
+                    // Ложные «потерянные грани» внутри отверстия — это и есть дырка, а не
+                    // проблема сетки: убираем такие точки, чтобы не рисовать круги в проёме.
+                    for (int i = lostFacePts.Count - 1; i >= 0; i--)
+                    {
+                        bool inHole = false;
+                        foreach (var hp in holePolys)
+                            if (IsPointInPolygon(lostFacePts[i], hp)) { inHole = true; break; }
+                        if (inHole) { lostFacePts.RemoveAt(i); lostFaceCenters.RemoveAt(i); }
                     }
                 }
 
@@ -291,6 +504,15 @@ namespace MeshPlugin
                     ed.WriteMessage("\nНе найдено ни одной замкнутой ячейки сетки — сначала постройте сетку (MESHQUADMESH).\n");
                     return;
                 }
+
+                // ИНВАРИАНТ БАЛАНСА ПЛОЩАДЕЙ. Считается здесь, пока в elements лежат
+                // только пластины плиты (стены и стержни добавляются ниже и площади в
+                // плане не дают), а печатается вместе с итогом экспорта.
+                double slabArea = 0.0;
+                for (int i = 0; i < slabElemCount; i++)
+                    slabArea += ElementPlanArea(elements[i], nodes3);
+                double holesArea;
+                double targetArea = SlabTargetArea(contourPts, holePolys, out holesArea);
 
                 // Стены -> вертикальные оболочки КЭ 44: кусок стены после разрезки узлами
                 // сетки выдавливается вверх на высоту этажа. Шаг по высоте держится ровно
@@ -304,30 +526,72 @@ namespace MeshPlugin
                     zCur += wallStep;
                 }
                 zLevels.Add(floorHeight);
+                // Высоты дверных проёмов добавляем как отметки рядов, чтобы верх проёма
+                // (низ перемычки) лёг точно на doorH при любом wallStep.
+                foreach (var dh in doorHeights)
+                {
+                    if (dh > 1e-6 && dh < floorHeight - 1e-6) zLevels.Add(dh);
+                    else if (dh >= floorHeight - 1e-6)
+                        ed.WriteMessage($"\nВНИМАНИЕ: высота дверного проёма {dh:0.#} >= высоты этажа {floorHeight:0.#} — стена под таким проёмом не будет выдавлена совсем (перемычки нет).\n");
+                }
+                zLevels.Sort();
+                for (int i = zLevels.Count - 1; i > 0; i--)
+                    if (zLevels[i] - zLevels[i - 1] < 1e-6) zLevels.RemoveAt(i);
                 int rows = zLevels.Count - 1;
                 int wallElemCount = 0;
+                int doorPiers = 0;      // кусков стены, попавших под дверь
+                int doorRowsSkipped = 0; // рядов КЭ 44, не поставленных из-за проёма
 
                 foreach (var seg in segments)
                 {
-                    double thickness = -1;
+                    // Ось пилона часто лежит на линии стены (пилон внутри/вдоль стены).
+                    // Брать первое совпадение нельзя — пилон получил бы толщину и блок
+                    // стены. Поэтому запоминаем первое совпадение, но запись с PILON
+                    // всегда перебивает обычную стену.
+                    double thickness = -1; int wIdx = -1;
                     for (int w = 0; w < wallOrig.Count; w++)
                     {
-                        if (IsPointOnSegment(seg[0], wallOrig[w][0], wallOrig[w][1], 1e-3) &&
-                            IsPointOnSegment(seg[1], wallOrig[w][0], wallOrig[w][1], 1e-3))
-                        {
-                            thickness = wallOrigThickness[w];
-                            break;
-                        }
+                        if (!IsPointOnSegment(seg[0], wallOrig[w][0], wallOrig[w][1], MeshTol.OnSegment) ||
+                            !IsPointOnSegment(seg[1], wallOrig[w][0], wallOrig[w][1], MeshTol.OnSegment)) continue;
+
+                        if (wIdx < 0) { wIdx = w; thickness = wallOrigThickness[w]; }
+                        if (wallOrigIsPylon[w]) { wIdx = w; thickness = wallOrigThickness[w]; break; }
                     }
                     if (thickness < 0) continue;
 
                     double tKey = Math.Round(thickness, 1);
-                    if (!wallStiffIds.ContainsKey(tKey))
-                        wallStiffIds[tKey] = nextStiff++;
-                    int stiffId = wallStiffIds[tKey];
+                    bool segIsPylon = wallOrigIsPylon[wIdx];
+                    string sizeKey = segIsPylon ? (wallOrigSizeKey[wIdx] ?? tKey.ToString()) : null;
+
+                    // Жёсткость: у пилона свой номер по типоразмеру, у стены — по толщине.
+                    // Параметры (E, толщина, RO) при этом могут совпадать — так и задумано.
+                    string stiffKey = segIsPylon ? ("P" + sizeKey) : ("W" + tKey);
+                    int stiffId;
+                    if (!wallStiffIds.TryGetValue(stiffKey, out stiffId))
+                    {
+                        wallStiffIds[stiffKey] = stiffId = nextStiff++;
+                        wallStiffThk[stiffId] = tKey;
+                        wallStiffTitle[stiffId] = segIsPylon
+                            ? $"пилон {sizeKey} (пластина H-{tKey:0.#})"
+                            : $"стена H-{tKey:0.#}";
+                    }
+
+                    // Дверной проём: если середина куска стены лежит на линии
+                    // WALL_DOORS, ряды от пола до высоты двери не ставим (остаётся
+                    // перемычка выше). Высота — из имени слоя двери.
+                    double doorH = 0;
+                    if (doorOrig.Count > 0)
+                    {
+                        Point2d mid = new Point2d((seg[0].X + seg[1].X) / 2.0, (seg[0].Y + seg[1].Y) / 2.0);
+                        for (int d = 0; d < doorOrig.Count; d++)
+                            if (IsPointOnSegment(mid, doorOrig[d][0], doorOrig[d][1], MeshTol.DoorOnAxis) && doorHeights[d] > doorH)
+                                doorH = doorHeights[d];
+                        if (doorH > 0) doorPiers++;
+                    }
 
                     for (int k = 1; k <= rows; k++)
                     {
+                        if (doorH > 0 && zLevels[k] <= doorH + 1e-6) { doorRowsSkipped++; continue; }
                         int aLow = Node3(seg[0].X, seg[0].Y, zLevels[k - 1]);
                         int bLow = Node3(seg[1].X, seg[1].Y, zLevels[k - 1]);
                         int aUp = Node3(seg[0].X, seg[0].Y, zLevels[k]);
@@ -351,6 +615,7 @@ namespace MeshPlugin
                     int bottom = Node3(columnCenters[c].X, columnCenters[c].Y, 0.0);
                     int top = Node3(columnCenters[c].X, columnCenters[c].Y, floorHeight);
                     elements.Add(new int[] { 10, colStiffIds[dimKey], bottom, top });
+
                     barCount++;
                 }
 
@@ -390,17 +655,23 @@ namespace MeshPlugin
                 sb.AppendLine(")");
 
                 sb.AppendLine("( 3/");
+                string roStr = "RO " + unitWeight.ToString("0.###", inv);
                 sb.AppendLine("1 GEI " + elasticModulus.ToString("0.###e+000", inv) + " 0.2 "
-                    + thicknessM.ToString("0.###", inv) + " RO 2.5 /");
-                foreach (var kv in wallStiffIds)
+                    + thicknessM.ToString("0.###", inv) + " " + roStr + " /");
+                // Жёсткости пластин по возрастанию номера: стены и пилоны идут отдельными
+                // номерами, даже если параметры совпадают (различие — только в номере).
+                var wallStiffOrdered = new List<int>(wallStiffThk.Keys);
+                wallStiffOrdered.Sort();
+                foreach (int sid in wallStiffOrdered)
                 {
-                    sb.AppendLine(kv.Value + " GEI " + elasticModulus.ToString("0.###e+000", inv) + " 0.2 "
-                        + (kv.Key / 1000.0).ToString("0.###", inv) + " RO 2.5 /");
+                    sb.AppendLine(sid + " GEI " + elasticModulus.ToString("0.###e+000", inv) + " 0.2 "
+                        + (wallStiffThk[sid] / 1000.0).ToString("0.###", inv) + " " + roStr + " /");
                 }
                 foreach (var cd in colStiffDims)
                 {
                     sb.AppendLine((int)cd[2] + " S0 " + elasticModulus.ToString("0.###e+000", inv) + " "
-                        + (cd[0] / 10.0).ToString("0.#", inv) + " " + (cd[1] / 10.0).ToString("0.#", inv) + "/");
+                        + (cd[0] / 10.0).ToString("0.#", inv) + " " + (cd[1] / 10.0).ToString("0.#", inv)
+                        + " " + roStr + "/");
                     sb.AppendLine(" 0 Mu 0.2/");
                 }
                 sb.AppendLine(")");
@@ -417,13 +688,48 @@ namespace MeshPlugin
 
                 System.IO.File.WriteAllText(outPath, sb.ToString(), System.Text.Encoding.GetEncoding(1251));
 
-                int quadCount = 0, triCount = 0;
-                for (int i = 0; i < slabElemCount; i++)
-                    if (elements[i][0] == 44) quadCount++; else triCount++;
+                // Легенда: в текстовом формате ЛИРЫ у жёсткости нет ни имени, ни
+                // комментария, поэтому расшифровка номеров пишется отдельным файлом
+                // рядом с задачей — по нему видно, где стена, а где пилон.
+                string legendPath = System.IO.Path.Combine(planDir, taskName + "_LEGEND.txt");
+                var lg = new System.Text.StringBuilder();
+                lg.AppendLine("Расшифровка номеров для задачи " + taskName);
+                lg.AppendLine();
+                lg.AppendLine("ЖЁСТКОСТИ (документ 3)");
+                lg.AppendLine("  1 = фундаментная плита H-" + thicknessMm.ToString("0.#", inv));
+                foreach (int sid in wallStiffOrdered)
+                    lg.AppendLine("  " + sid + " = " + wallStiffTitle[sid]);
+                foreach (var cd in colStiffDims)
+                    lg.AppendLine("  " + (int)cd[2] + " = пилон-стержень "
+                        + cd[0].ToString("0.#", inv) + "x" + cd[1].ToString("0.#", inv));
+                System.IO.File.WriteAllText(legendPath, lg.ToString(), System.Text.Encoding.GetEncoding(1251));
 
-                ed.WriteMessage($"\nЭкспортировано: узлов {nodes3.Count}; плита: КЭ 44 {quadCount}, КЭ 42 {triCount} (вееров под пилонами: {fanFaces}); стены: КЭ 44 {wallElemCount} (толщин: {wallStiffIds.Count}); пилоны: стержней КЭ 10 {barCount} (сечений: {colStiffIds.Count})" +
+                int rectCount = 0, quadCount = 0, triCount = 0;
+                for (int i = 0; i < slabElemCount; i++)
+                    if (elements[i][0] == 41) rectCount++;
+                    else if (elements[i][0] == 44) quadCount++;
+                    else triCount++;
+
+                ed.WriteMessage($"\nЭкспортировано: узлов {nodes3.Count}; плита: КЭ 41 {rectCount}, КЭ 44 {quadCount}, КЭ 42 {triCount} (вееров под пилонами: {fanFaces}); стены: КЭ 44 {wallElemCount} (толщин: {wallStiffIds.Count}); пилоны: стержней КЭ 10 {barCount} (сечений: {colStiffIds.Count})" +
+                    $"; осей пилонов (PILON) в чертеже: {wallOrigIsPylon.FindAll(p => p).Count}" +
+                    (holePolys.Count > 0 ? $"; отверстий: {holePolys.Count} (удалено элементов внутри: {holeElemsRemoved})" : "") +
+                    (doorOrig.Count > 0 ? $"; дверных проёмов: {doorOrig.Count} (врезано узлов на косяках: {doorJambSplits}, кусков стены под дверью: {doorPiers}, пропущено рядов КЭ 44: {doorRowsSkipped})" : "") +
                     (failedFaces > 0 ? $"; потеряно граней: {failedFaces}" : "") +
                     (columnsWithoutDims > 0 ? $"; пилонов без размеров в имени слоя (принято 400x400): {columnsWithoutDims}" : "") + "\n");
+                // Главная проверка результата: покрывают ли пластины плиту целиком.
+                ReportAreaBalance(ed, slabArea, targetArea, holesArea, slabElemCount);
+
+                // Раскладка номеров — чтобы сверить с тем, что показала ЛИРА.
+                ed.WriteMessage($"Жёсткости: 1 = плита H-{thicknessMm:0.#}\n");
+                foreach (int sid in wallStiffOrdered)
+                    ed.WriteMessage($"  {sid} = {wallStiffTitle[sid]}\n");
+                ed.WriteMessage($"Легенда: {legendPath}\n");
+
+                if (lostFaceCenters.Count > 0)
+                {
+                    DrawMarkCircles(tr, db, ProblemLayerName, lostFacePts, ProblemMarkRadius);
+                    ed.WriteMessage($"\nВНИМАНИЕ: не удалось разбить ячеек: {lostFaceCenters.Count}, центры: {string.Join(", ", lostFaceCenters)} — в этих местах в ЛИРЕ будут дыры. Ячейки отмечены кругами в слое {ProblemLayerName}.\n");
+                }
                 ed.WriteMessage($"Файл: {outPath}\n");
                 ed.WriteMessage("Импорт в ЛИРЕ: Файл → Импортировать задачу → тип \"Текстовые файлы (*.txt)\". После импорта рекомендуется Упаковка схемы.\n");
 

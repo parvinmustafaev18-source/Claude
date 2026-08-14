@@ -6,7 +6,8 @@ namespace MeshPlugin
 {
     public partial class Commands
     {
-        private const double MinElementSize = 100.0;
+        // Значения допусков — в Defs.cs (MeshTol); здесь короткое привычное имя.
+        private const double MinElementSize = MeshTol.MinElementSize;
 
         // Центры (центроиды вершин) сечений пилонов — узлы, к которым крепятся стержни.
         private List<Point2d> ComputeColumnCenters(List<List<Point2d>> columnPolys)
@@ -24,7 +25,7 @@ namespace MeshPlugin
         // Убирает вершины, лежащие на прямой между соседями (допуск 0.5 мм):
         // прямоугольник, начерченный с лишними промежуточными точками на сторонах,
         // снова становится четырёхвершинным.
-        private List<Point2d> RemoveCollinearVertices(List<Point2d> poly, double eps = 0.5)
+        private List<Point2d> RemoveCollinearVertices(List<Point2d> poly, double eps = MeshTol.Collinear)
         {
             var result = new List<Point2d>(poly);
             bool removed = true;
@@ -55,7 +56,7 @@ namespace MeshPlugin
         {
             double ab = a.GetDistanceTo(b), bc = b.GetDistanceTo(c), ca = c.GetDistanceTo(a);
             double sumSq = ab * ab + bc * bc + ca * ca;
-            if (sumSq < 1e-12) return 0.0;
+            if (sumSq < MeshTol.ZeroSq) return 0.0;
             double area = Math.Abs(CrossProduct(a, b, c)) / 2.0;
             return 4.0 * Math.Sqrt(3.0) * area / sumSq;
         }
@@ -87,16 +88,21 @@ namespace MeshPlugin
         }
 
 
-        private string EdgeKey(Point2d a, Point2d b)
+        // Ключ ребра по индексам его узлов (порядок концов не важен). Индексы
+        // выдаёт NodeIndex, который сливает точки по допуску, — поэтому ребро
+        // опознаётся как то же самое даже при разнице координат в тысячные доли мм.
+        // Прежний вариант строил ключ из округлённых координат и на границе
+        // округления считал одно и то же ребро двумя разными.
+        private static long EdgePairKey(int a, int b)
         {
-            string ka = Math.Round(a.X, 3) + "_" + Math.Round(a.Y, 3);
-            string kb = Math.Round(b.X, 3) + "_" + Math.Round(b.Y, 3);
-            return string.CompareOrdinal(ka, kb) < 0 ? ka + "|" + kb : kb + "|" + ka;
+            int lo = a < b ? a : b;
+            int hi = a < b ? b : a;
+            return ((long)lo << 32) | (uint)hi;
         }
 
         private Point2d FindOppositeVertex(Point2d[] tri, Point2d a, Point2d b)
         {
-            double tol = 1e-3;
+            double tol = MeshTol.NodeMerge;
             foreach (var v in tri)
             {
                 bool closeToA = Math.Abs(v.X - a.X) < tol && Math.Abs(v.Y - a.Y) < tol;
@@ -134,7 +140,7 @@ namespace MeshPlugin
             double dx = b.X - a.X;
             double dy = b.Y - a.Y;
             double lenSq = dx * dx + dy * dy;
-            if (lenSq < 1e-12) return false;
+            if (lenSq < MeshTol.ZeroSq) return false;
 
             double len = Math.Sqrt(lenSq);
             double dist = Math.Abs(CrossProduct(a, b, p)) / len;
@@ -180,6 +186,59 @@ namespace MeshPlugin
                    ((d3 > 0 && d4 < 0) || (d3 < 0 && d4 > 0));
         }
 
+        // Полигон целиком в пределах контура: каждая вершина внутри или на границе,
+        // стороны не пересекают стороны контура, середина каждой стороны внутри
+        // (ловит выход наружу через выемку вогнутого контура при вершинах на границе).
+        // Касание границы — допустимо, выход наружу — нет.
+        private bool IsPolygonInsideContour(List<Point2d> poly, List<Point2d> contour)
+        {
+            int n = poly.Count, cn = contour.Count;
+
+            bool InsideOrOnBoundary(Point2d p)
+            {
+                for (int k = 0; k < cn; k++)
+                    if (IsPointOnSegment(p, contour[k], contour[(k + 1) % cn], MeshTol.OnSegment)) return true;
+                return IsPointInPolygon(p, contour);
+            }
+
+            for (int i = 0; i < n; i++)
+            {
+                Point2d a = poly[i];
+                Point2d b = poly[(i + 1) % n];
+
+                if (!InsideOrOnBoundary(a)) return false;
+
+                for (int k = 0; k < cn; k++)
+                    if (SegmentsIntersect(a, b, contour[k], contour[(k + 1) % cn])) return false;
+
+                Point2d mid = new Point2d((a.X + b.X) / 2.0, (a.Y + b.Y) / 2.0);
+                if (!InsideOrOnBoundary(mid)) return false;
+            }
+            return true;
+        }
+
+        // Отрезок целиком в пределах контура: оба конца и середина внутри или на
+        // границе, пересечений со сторонами контура нет. Касание границы допустимо.
+        private bool IsSegmentInsideContour(Point2d a, Point2d b, List<Point2d> contour)
+        {
+            int cn = contour.Count;
+
+            bool InsideOrOnBoundary(Point2d p)
+            {
+                for (int k = 0; k < cn; k++)
+                    if (IsPointOnSegment(p, contour[k], contour[(k + 1) % cn], MeshTol.OnSegment)) return true;
+                return IsPointInPolygon(p, contour);
+            }
+
+            if (!InsideOrOnBoundary(a) || !InsideOrOnBoundary(b)) return false;
+
+            for (int k = 0; k < cn; k++)
+                if (SegmentsIntersect(a, b, contour[k], contour[(k + 1) % cn])) return false;
+
+            Point2d mid = new Point2d((a.X + b.X) / 2.0, (a.Y + b.Y) / 2.0);
+            return InsideOrOnBoundary(mid);
+        }
+
         private bool IsCellFullyInside(Point2d[] cell, List<Point2d> contour)
         {
             foreach (var corner in cell)
@@ -220,10 +279,79 @@ namespace MeshPlugin
             return area / 2.0;
         }
 
+        // Среднее вершин: для маркеров проблемных мест точности достаточно.
+        private Point2d PolygonCentroid(List<Point2d> poly)
+        {
+            double sx = 0, sy = 0;
+            foreach (var p in poly) { sx += p.X; sy += p.Y; }
+            return new Point2d(sx / poly.Count, sy / poly.Count);
+        }
+
         private void EnsureCcw(List<Point2d> poly)
         {
             if (PolygonArea(poly) < 0)
                 poly.Reverse();
+        }
+
+        // Точки самопересечения замкнутого контура — все пары несмежных сторон.
+        // При наложении параллельных сторон точки пересечения нет, берётся середина
+        // второй стороны. Общая для ValidateContour (останавливает построение на
+        // первой) и MESHCHECK (показывает все сразу).
+        private List<Point2d> FindSelfIntersections(List<Point2d> poly)
+        {
+            var result = new List<Point2d>();
+            int m = poly.Count;
+            for (int i = 0; i < m; i++)
+            {
+                for (int j = i + 1; j < m; j++)
+                {
+                    if (j == i + 1 || (i == 0 && j == m - 1)) continue; // смежные стороны
+
+                    Point2d p1 = poly[i], p2 = poly[(i + 1) % m], p3 = poly[j], p4 = poly[(j + 1) % m];
+                    if (!SegmentsIntersect(p1, p2, p3, p4)) continue;
+
+                    double denom = (p2.X - p1.X) * (p4.Y - p3.Y) - (p2.Y - p1.Y) * (p4.X - p3.X);
+                    if (Math.Abs(denom) < MeshTol.Zero)
+                    {
+                        result.Add(new Point2d((p3.X + p4.X) / 2.0, (p3.Y + p4.Y) / 2.0));
+                        continue;
+                    }
+
+                    double t = ((p3.X - p1.X) * (p4.Y - p3.Y) - (p3.Y - p1.Y) * (p4.X - p3.X)) / denom;
+                    result.Add(new Point2d(p1.X + (p2.X - p1.X) * t, p1.Y + (p2.Y - p1.Y) * t));
+                }
+            }
+            return result;
+        }
+
+        // Вершины контура, где стороны не перпендикулярны (отклонение от 90° больше
+        // 0.5°). Вершина на прямом участке (угол ≈ 180°) углом не считается — это
+        // промежуточная точка стороны. Кривой угол не ошибка (бывает кривая
+        // подоснова), но сетка у него заметно хуже, поэтому места возвращаются
+        // вместе с углами — и для предупреждения, и для маркеров на чертеже.
+        private List<int> FindNonRightCorners(List<Point2d> poly, out List<double> angles)
+        {
+            var result = new List<int>();
+            angles = new List<double>();
+
+            int m = poly.Count;
+            for (int i = 0; i < m; i++)
+            {
+                Point2d prev = poly[(i - 1 + m) % m], cur = poly[i], next = poly[(i + 1) % m];
+                double l1 = prev.GetDistanceTo(cur), l2 = cur.GetDistanceTo(next);
+                if (l1 < MeshTol.Zero || l2 < MeshTol.Zero) continue;
+
+                double dot = ((cur.X - prev.X) * (next.X - cur.X) + (cur.Y - prev.Y) * (next.Y - cur.Y)) / (l1 * l2);
+                dot = Math.Max(-1.0, Math.Min(1.0, dot));
+                double angle = 180.0 - Math.Acos(dot) * 180.0 / Math.PI;
+
+                if (angle > 175.0) continue; // промежуточная точка на прямой стороне
+                if (Math.Abs(angle - 90.0) <= 0.5) continue;
+
+                result.Add(i);
+                angles.Add(angle);
+            }
+            return result;
         }
 
         private Point2d LineIntersection(Point2d p1, Point2d p2, Point2d clipA, Point2d clipB)
@@ -277,7 +405,7 @@ namespace MeshPlugin
             return result;
         }
 
-        private List<Point2d> CleanupPolygon(List<Point2d> poly, double eps = 1e-3)
+        private List<Point2d> CleanupPolygon(List<Point2d> poly, double eps = MeshTol.OnSegment)
         {
             var result = new List<Point2d>();
             int n = poly.Count;
@@ -364,31 +492,70 @@ namespace MeshPlugin
             }
             else if (verts.Count > 3)
             {
-                // Ушная триангуляция застряла (полигон почти вырожден или с дефектом) —
-                // запасной вариант: веер от центроида, если все его треугольники корректны.
-                // Иначе остаток полигона теряется, что учитывается в failedPolygons.
-                double cx = 0, cy = 0;
-                foreach (var p in verts) { cx += p.X; cy += p.Y; }
-                Point2d c = new Point2d(cx / verts.Count, cy / verts.Count);
-
-                var fan = new List<Point2d[]>();
-                bool fanOk = true;
-                int m = verts.Count;
-                for (int i = 0; i < m; i++)
-                {
-                    Point2d a = verts[i];
-                    Point2d b = verts[(i + 1) % m];
-                    if (CrossProduct(a, b, c) <= 2e-3) { fanOk = false; break; }
-                    fan.Add(new Point2d[] { a, b, c });
-                }
-
-                if (fanOk)
-                    result.AddRange(fan);
+                // Ушная триангуляция застряла. Типовой случай — висячий узел на прямом
+                // участке границы: вершина коллинеарна соседям, ухо в ней вырождено, а
+                // выбрасывать её нельзя (узел обязан остаться углом треугольников, иначе
+                // в ЛИРЕ он не связан с пластиной). Запасной вариант: рекурсивное
+                // разрезание полигона по внутренней диагонали — работает и с
+                // коллинеарными вершинами. Полный провал учитывается в failedPolygons.
+                var rest = new List<Point2d[]>();
+                if (TriangulateByDiagonalSplit(verts, rest, 0))
+                    result.AddRange(rest);
                 else
                     failedPolygons++;
             }
 
             return result;
+        }
+
+        // Разрезание простого полигона по внутренней диагонали, рекурсивно: диагональ
+        // не пересекает стороны и её середина внутри полигона; каждая часть разбирается
+        // так же, вплоть до треугольников (нулевые по площади пропускаются).
+        private bool TriangulateByDiagonalSplit(List<Point2d> verts, List<Point2d[]> result, int depth)
+        {
+            int n = verts.Count;
+            if (n < 3) return true;
+            if (n == 3)
+            {
+                if (Math.Abs(CrossProduct(verts[0], verts[1], verts[2])) > 1e-6)
+                    result.Add(new Point2d[] { verts[0], verts[1], verts[2] });
+                return true;
+            }
+            if (depth > 64) return false;
+
+            for (int i = 0; i < n; i++)
+            {
+                for (int j = i + 2; j < n; j++)
+                {
+                    if (i == 0 && j == n - 1) continue; // смежные вершины
+
+                    Point2d a = verts[i], b = verts[j];
+                    if (a.GetDistanceTo(b) < 1e-6) continue;
+
+                    bool bad = false;
+                    for (int k = 0; k < n && !bad; k++)
+                        if (SegmentsIntersect(a, b, verts[k], verts[(k + 1) % n])) bad = true;
+                    if (bad) continue;
+
+                    Point2d mid = new Point2d((a.X + b.X) / 2.0, (a.Y + b.Y) / 2.0);
+                    if (!IsPointInPolygon(mid, verts)) continue;
+
+                    var left = new List<Point2d>();
+                    for (int k = i; k != (j + 1) % n; k = (k + 1) % n) left.Add(verts[k]);
+                    var right = new List<Point2d>();
+                    for (int k = j; k != (i + 1) % n; k = (k + 1) % n) right.Add(verts[k]);
+                    if (left.Count < 3 || right.Count < 3) continue;
+
+                    var sub = new List<Point2d[]>();
+                    if (TriangulateByDiagonalSplit(left, sub, depth + 1) &&
+                        TriangulateByDiagonalSplit(right, sub, depth + 1))
+                    {
+                        result.AddRange(sub);
+                        return true;
+                    }
+                }
+            }
+            return false;
         }
 
     }

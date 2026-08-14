@@ -15,6 +15,7 @@ namespace MeshPlugin
         {
             Document doc = Application.DocumentManager.MdiActiveDocument;
             Editor ed = doc.Editor;
+            EchoCommandStart(ed, "MESHQUADMESH");
             Database db = doc.Database;
 
             PromptEntityOptions peo = new PromptEntityOptions("\nВыберите замкнутый контур (полилинию): ");
@@ -54,6 +55,19 @@ namespace MeshPlugin
                 return;
             }
 
+            // Отверстия (проёмы): опциональный дополнительный выбор замкнутых контуров,
+            // внутри которых сетка не строится. Enter без выбора — отверстий нет; ранее
+            // созданные отверстия всё равно подхватятся со слоя MESH_HOLES.
+            var holeIds = new List<ObjectId>();
+            PromptSelectionOptions pso = new PromptSelectionOptions();
+            pso.MessageForAdding = "\nВыберите замкнутые контуры отверстий/проёмов (Enter — без отверстий): ";
+            pso.AllowDuplicates = false;
+            SelectionFilter holeFilter = new SelectionFilter(
+                new[] { new TypedValue((int)DxfCode.Start, "LWPOLYLINE") });
+            PromptSelectionResult psr = ed.GetSelection(pso, holeFilter);
+            if (psr.Status == PromptStatus.OK)
+                holeIds.AddRange(psr.Value.GetObjectIds());
+
             try
             {
             using (Transaction tr = db.TransactionManager.StartTransaction())
@@ -66,7 +80,18 @@ namespace MeshPlugin
                     return;
                 }
 
-                if (!ValidateContour(pline, ed, tr, db, out var contourPts)) return;
+                // Старые маркеры проблем и мозаика качества стираются при каждом
+                // запуске: после перестройки сетки они относятся к прошлой сетке
+                EraseMarksOnLayer(tr, db, ProblemLayerName);
+                EraseMarksOnLayer(tr, db, BadElementsLayerName);
+
+                // Дуги и полилинии вне плоскости XY читаются как ломаные в WCS —
+                // предупреждаем до построения, иначе расхождение всплывёт только в ЛИРЕ.
+                WarnBadPolylines(tr, db, ed);
+
+                // При отказе валидации транзакция коммитится: до этого места команда
+                // ничего не меняла, а маркеры разрывов/углов без коммита откатились бы.
+                if (!ValidateContour(pline, ed, tr, db, out var contourPts)) { tr.Commit(); return; }
                 EnsureCcw(contourPts);
 
                 double minX = double.MaxValue, minY = double.MaxValue;
@@ -81,12 +106,84 @@ namespace MeshPlugin
 
                 int snappedWalls = SnapWallsToGrid(tr, db, minX, minY, cellSize);
                 var wallSegments = GetWallSegments(tr, db);
+                var doorEnds = GetDoorEndpoints(tr, db); // косяки дверных проёмов — узлы сетки
                 ed.WriteMessage($"\nНайдено сегментов стен: {wallSegments.Count}, подвинуто к узлам сетки (до {WallSnapTolerance:0} мм): {snappedWalls}\n");
 
+                // Жёсткий запрет: контуры стен, как и пилоны, не могут выходить за
+                // пределы фундаментной плиты (касание границы допустимо). Нарушение —
+                // остановка команды без изменений в чертеже.
+                var outsideWalls = new List<string>();
+                var outsideWallPts = new List<Point2d>();
+                foreach (var w in wallSegments)
+                {
+                    if (IsSegmentInsideContour(w[0], w[1], contourPts)) continue;
+                    Point2d wm = new Point2d((w[0].X + w[1].X) / 2.0, (w[0].Y + w[1].Y) / 2.0);
+                    outsideWalls.Add($"({wm.X:0}, {wm.Y:0})");
+                    outsideWallPts.Add(wm);
+                }
+                if (outsideWalls.Count > 0)
+                {
+                    ed.WriteMessage($"\nОшибка: сегменты стен выходят за контур фундаментной плиты ({outsideWalls.Count} шт.), середины: {string.Join(", ", outsideWalls)}. Стена обязана целиком лежать в пределах плиты. Команда остановлена, чертёж не изменён. Проблемные места отмечены кругами в слое {ProblemLayerName}.\n");
+                    // Откат основной транзакции (снап стен и т.п.), маркеры — своей
+                    tr.Abort();
+                    MarkProblemPoints(db, outsideWallPts);
+                    return;
+                }
+
                 // Пилоны (слой COLUMNS): контур пилона врезается в сетку как стены,
-                // внутри пилона строится своя сетка с шагом ColumnMeshStep в двух направлениях.
+                // внутренность пилона остаётся пустой — только точка в центре.
                 int snappedColumns = SnapColumnsToGrid(tr, db, minX, minY, cellSize);
                 var columnPolys = GetColumnPolygons(tr, db);
+
+                // Жёсткий запрет: контур пилона ни при каких условиях не может выходить
+                // за пределы фундаментной плиты (касание границы допустимо). Нарушение —
+                // остановка команды без изменений в чертеже.
+                var outsideColumns = new List<string>();
+                var outsideColumnPts = new List<Point2d>();
+                foreach (var col in columnPolys)
+                {
+                    if (IsPolygonInsideContour(col, contourPts)) continue;
+                    var cc = ComputeColumnCenters(new List<List<Point2d>> { col })[0];
+                    outsideColumns.Add($"({cc.X:0}, {cc.Y:0})");
+                    outsideColumnPts.Add(cc);
+                }
+                if (outsideColumns.Count > 0)
+                {
+                    ed.WriteMessage($"\nОшибка: пилоны выходят за контур фундаментной плиты ({outsideColumns.Count} шт.), центры: {string.Join(", ", outsideColumns)}. Пилон обязан целиком лежать в пределах плиты. Команда остановлена, чертёж не изменён. Проблемные места отмечены кругами в слое {ProblemLayerName}.\n");
+                    // Откат основной транзакции (снап стен/пилонов), маркеры — своей
+                    tr.Abort();
+                    MarkProblemPoints(db, outsideColumnPts);
+                    return;
+                }
+
+                // Отверстия (проёмы) в плите: замкнутые контуры, внутри которых сетки
+                // нет. Геометрически это та же «пустота», что и внутренность пилона, но
+                // без центральной точки, без крест-оси и без экспорта пластинами.
+                // Интерактивно выбранные контуры переносятся на служебный слой MESH_HOLES
+                // и там же накапливаются между запусками; MESHEXPORTTXT по этому слою
+                // исключает грань отверстия из заливки элементами.
+                int movedHoles = MovePolylinesToHoleLayer(tr, db, holeIds, per.ObjectId);
+                var holePolys = GetHolePolygons(tr, db);
+
+                // Жёсткий запрет (как для стен и пилонов): контур отверстия не может
+                // выходить за пределы фундаментной плиты (касание границы допустимо).
+                var outsideHoles = new List<string>();
+                var outsideHolePts = new List<Point2d>();
+                foreach (var h in holePolys)
+                {
+                    if (IsPolygonInsideContour(h, contourPts)) continue;
+                    var hc = PolygonCentroid(h);
+                    outsideHoles.Add($"({hc.X:0}, {hc.Y:0})");
+                    outsideHolePts.Add(hc);
+                }
+                if (outsideHoles.Count > 0)
+                {
+                    ed.WriteMessage($"\nОшибка: контуры отверстий выходят за контур фундаментной плиты ({outsideHoles.Count} шт.), центры: {string.Join(", ", outsideHoles)}. Отверстие обязано целиком лежать в пределах плиты. Команда остановлена, чертёж не изменён. Проблемные места отмечены кругами в слое {ProblemLayerName}.\n");
+                    tr.Abort();
+                    MarkProblemPoints(db, outsideHolePts);
+                    return;
+                }
+
                 var cutSegments = new List<Point2d[]>(wallSegments);
                 foreach (var col in columnPolys)
                 {
@@ -94,7 +191,36 @@ namespace MeshPlugin
                     for (int i = 0; i < cn; i++)
                         cutSegments.Add(new Point2d[] { col[i], col[(i + 1) % cn] });
                 }
+                // Стороны отверстий врезаются в сетку как грани пилонов: узлы садятся
+                // на кромку, ячейки режутся по ней, внутренняя часть выбрасывается.
+                foreach (var h in holePolys)
+                {
+                    int hn = h.Count;
+                    for (int i = 0; i < hn; i++)
+                        cutSegments.Add(new Point2d[] { h[i], h[(i + 1) % hn] });
+                }
                 ed.WriteMessage($"\nНайдено пилонов: {columnPolys.Count}, подвинуто к сетке (до {WallSnapTolerance:0} мм): {snappedColumns}\n");
+                if (holePolys.Count > 0)
+                    ed.WriteMessage($"\nОтверстий (проёмов) в плите: {holePolys.Count}" + (movedHoles > 0 ? $" (перенесено на слой {HoleLayerName}: {movedHoles})" : "") + "\n");
+
+                // Принудительный поперечный узел в центре пилона: для каждой оси-стены
+                // PILON строим перпендикуляр через её середину. Он идёт ТОЛЬКО в список
+                // разреза ячеек (splitConstraints) — режет ячейки и даёт узел в центре
+                // поперёк оси, но НЕ попадает в cutSegments, чтобы ResolveOverlappingSegments
+                // не удалил это поперечное ребро как совпавшее со «стеной».
+                var pylonCrosses = GetPylonCrossConstraints(tr, db);
+                var splitConstraints = new List<Point2d[]>(cutSegments);
+                splitConstraints.AddRange(pylonCrosses);
+                if (pylonCrosses.Count > 0)
+                    ed.WriteMessage($"\nПоперечных осей пилонов врезано через центр: {pylonCrosses.Count}\n");
+
+                // Косяки дверных проёмов: первый проход собирает только их координаты —
+                // они идут «мягкими» целями в BuildGridCoords. Сами поперечные
+                // ограничения строятся ниже, ПОСЛЕ снапа дверей к готовой сетке, иначе
+                // разрезы остались бы на старых местах.
+                var jambXs = new List<double>();
+                var jambYs = new List<double>();
+                GetDoorJambConstraints(tr, db, cellSize, jambXs, jambYs);
 
                 var quadCells = new List<Point2d[]>();
                 var boundaryCells = new List<Point2d[]>();
@@ -113,10 +239,57 @@ namespace MeshPlugin
                     }
                 }
 
-                var xs = BuildGridCoords(minX, maxX, cellSize, colXs, out int shiftedX);
-                var ys = BuildGridCoords(minY, maxY, cellSize, colYs, out int shiftedY);
+                // Кромки отверстий — «жёсткие» цели: на каждой обязана лежать линия сетки.
+                // Если ближайшая линия рядом (в пределах допуска) — двигаем её на кромку,
+                // иначе ВСТАВЛЯЕМ новую линию. Тогда прямоугольный проём ложится на целые
+                // ячейки, неполных ячеек по периметру нет, узлы зашивать не нужно —
+                // круги ПРОБЛЕМА у кромок исчезают по построению.
+                var holeXs = new List<double>();
+                var holeYs = new List<double>();
+                foreach (var h in holePolys)
+                {
+                    foreach (var p in h)
+                    {
+                        holeXs.Add(p.X);
+                        holeYs.Add(p.Y);
+                    }
+                }
+
+                // Косяки — «мягкие» цели наравне с гранями пилонов: линия сетки, если она
+                // рядом, садится точно на косяк, и поперечный разрез не оставляет узкой
+                // полосы. Жёсткой целью косяк не делаем — вставлять ради двери линию
+                // через весь план накладно, локального разреза ячеек достаточно.
+                colXs.AddRange(jambXs);
+                colYs.AddRange(jambYs);
+
+                // Оси пилонов-пластин: концы и центр (там узел от поперечного разреза
+                // креста). Без этого линия сетки проходит в 20–80 мм от них и режет
+                // пластину на КЭ в единицы миллиметров.
+                GetPylonAxisTargets(tr, db, colXs, colYs);
+
+                var xs = BuildGridCoords(minX, maxX, cellSize, colXs, holeXs, out int shiftedX, out int insertedX, out int rejectedX);
+                var ys = BuildGridCoords(minY, maxY, cellSize, colYs, holeYs, out int shiftedY, out int insertedY, out int rejectedY);
                 if (shiftedX + shiftedY > 0)
-                    ed.WriteMessage($"\nЛиний сетки смещено к граням пилонов: {shiftedX + shiftedY}\n");
+                    ed.WriteMessage($"\nЛиний сетки смещено к граням пилонов/кромкам отверстий/косякам: {shiftedX + shiftedY}\n");
+                if (insertedX + insertedY > 0)
+                    ed.WriteMessage($"\nЛиний сетки добавлено по кромкам отверстий: {insertedX + insertedY}\n");
+                if (rejectedX + rejectedY > 0)
+                    ed.WriteMessage($"\nЦелей выравнивания пропущено (линия занята другой целью или сдвиг оставил бы полосу уже {MeshTol.MinGridGap(cellSize):0} мм): {rejectedX + rejectedY}\n");
+
+                // Сетка построена — подтягиваем к ней двери (только вдоль стены, до
+                // DoorSnapTolerance) и уже по новым местам строим поперечные разрезы
+                // через косяки. Квадраты-обозначения перерисовываются по новым серединам.
+                int snappedDoors = SnapDoorsToGrid(tr, db, xs, ys);
+                if (snappedDoors > 0)
+                {
+                    ed.WriteMessage($"\nДверных отрезков подтянуто к узлам сетки (до {DoorSnapTolerance:0} мм): {snappedDoors}\n");
+                    RedrawAllDoorMarks(tr, db);
+                }
+
+                var doorJambs = GetDoorJambConstraints(tr, db, cellSize, new List<double>(), new List<double>());
+                splitConstraints.AddRange(doorJambs);
+                if (doorJambs.Count > 0)
+                    ed.WriteMessage($"\nКосяков дверных проёмов врезано в сетку: {doorJambs.Count}\n");
 
                 for (int xi = 0; xi + 1 < xs.Count; xi++)
                 {
@@ -135,7 +308,18 @@ namespace MeshPlugin
                             continue; // внутри пилона сетка плиты не нужна — там своя, 100 мм
                         }
 
-                        if (CellTouchesWalls(cell, cutSegments))
+                        if (CellCenterInsideAnyColumn(cell, holePolys))
+                        {
+                            // Внутри проёма сетки нет вообще. Проверяем по ЦЕНТРУ ячейки,
+                            // а НЕ по всем углам: у ячейки, чья внешняя грань лежит ровно
+                            // на кромке проёма, 2 угла на границе (IsPointInPolygon → false),
+                            // поэтому CellInsideAnyColumn её не выбрасывал — она резалась
+                            // позже и оставляла осиротевший узел с кругом ПРОБЛЕМА на шаг
+                            // внутрь кромки. Центр такой ячейки строго внутри → выброс.
+                            continue;
+                        }
+
+                        if (CellTouchesWalls(cell, splitConstraints))
                         {
                             wallCells.Add(cell);
                         }
@@ -165,6 +349,9 @@ namespace MeshPlugin
                 var triVerts = new List<Point2d[]>();
                 var directQuads = new List<Point2d[]>();
                 int failedPolygons = 0;
+                // Центры полигонов, которые не удалось триангулировать, — для кругов
+                // в слое проблем (сетка в этих местах не построится).
+                var failedPolygonPts = new List<Point2d>();
 
                 foreach (var cell in boundaryCells)
                 {
@@ -172,7 +359,7 @@ namespace MeshPlugin
                     clipped = CleanupPolygon(clipped);
 
                     if (clipped.Count < 3) continue;
-                    if (Math.Abs(PolygonArea(clipped)) < 1e-3) continue;
+                    if (Math.Abs(PolygonArea(clipped)) < MeshTol.MinArea) continue;
 
                     if (clipped.Count == 4 && IsConvexQuad(clipped.ToArray()))
                     {
@@ -180,11 +367,13 @@ namespace MeshPlugin
                     }
                     else
                     {
+                        int fBefore = failedPolygons;
                         foreach (var tri in TriangulateSimplePolygon(clipped, ref failedPolygons))
                         {
-                            if (Math.Abs(PolygonArea(new List<Point2d>(tri))) < 1e-3) continue;
+                            if (Math.Abs(PolygonArea(new List<Point2d>(tri))) < MeshTol.MinArea) continue;
                             triVerts.Add(tri);
                         }
+                        if (failedPolygons > fBefore) failedPolygonPts.Add(PolygonCentroid(clipped));
                     }
                 }
 
@@ -197,13 +386,14 @@ namespace MeshPlugin
                     clipped = CleanupPolygon(clipped);
 
                     if (clipped.Count < 3) continue;
-                    if (Math.Abs(PolygonArea(clipped)) < 1e-3) continue;
+                    if (Math.Abs(PolygonArea(clipped)) < MeshTol.MinArea) continue;
 
-                    foreach (var piece in SplitPolygonByWalls(clipped, cutSegments))
+                    foreach (var piece in SplitPolygonByWalls(clipped, splitConstraints))
                     {
                         if (piece.Count < 3) continue;
-                        if (Math.Abs(PolygonArea(piece)) < 1e-3) continue;
+                        if (Math.Abs(PolygonArea(piece)) < MeshTol.MinArea) continue;
                         if (PieceInsideAnyColumn(piece, columnPolys)) continue;
+                        if (PieceInsideAnyColumn(piece, holePolys)) continue;
 
                         if (piece.Count == 4 && IsConvexQuad(piece.ToArray()))
                         {
@@ -211,11 +401,13 @@ namespace MeshPlugin
                         }
                         else
                         {
+                            int fBefore = failedPolygons;
                             foreach (var tri in TriangulateSimplePolygon(piece, ref failedPolygons))
                             {
-                                if (Math.Abs(PolygonArea(new List<Point2d>(tri))) < 1e-3) continue;
+                                if (Math.Abs(PolygonArea(new List<Point2d>(tri))) < MeshTol.MinArea) continue;
                                 triVerts.Add(tri);
                             }
+                            if (failedPolygons > fBefore) failedPolygonPts.Add(PolygonCentroid(piece));
                         }
                     }
                 }
@@ -227,17 +419,21 @@ namespace MeshPlugin
 
                 ed.WriteMessage($"\nТреугольников по краю (до объединения): {triVerts.Count}\n");
 
-                // Справочник "сторона -> какие треугольники её используют"
-                var edgeMap = new Dictionary<string, List<int>>();
+                // Справочник "сторона -> какие треугольники её используют".
+                // Узлы треугольников проходят через общий NodeIndex: сторона двух
+                // соседних треугольников опознаётся как общая по допуску слияния,
+                // а не по совпадению округлённых координат.
+                var triNodes = new NodeIndex();
+                var edgeMap = new Dictionary<long, List<int>>();
 
                 for (int i = 0; i < triVerts.Count; i++)
                 {
                     var t = triVerts[i];
-                    string[] keys = new string[]
+                    long[] keys = new long[]
                     {
-                        EdgeKey(t[0], t[1]),
-                        EdgeKey(t[1], t[2]),
-                        EdgeKey(t[2], t[0])
+                        EdgePairKey(triNodes.GetNode(t[0]), triNodes.GetNode(t[1])),
+                        EdgePairKey(triNodes.GetNode(t[1]), triNodes.GetNode(t[2])),
+                        EdgePairKey(triNodes.GetNode(t[2]), triNodes.GetNode(t[0]))
                     };
 
                     foreach (var k in keys)
@@ -257,11 +453,11 @@ namespace MeshPlugin
                     if (used[i]) continue;
 
                     var t = triVerts[i];
-                    string[] keys = new string[]
+                    long[] keys = new long[]
                     {
-                        EdgeKey(t[0], t[1]),
-                        EdgeKey(t[1], t[2]),
-                        EdgeKey(t[2], t[0])
+                        EdgePairKey(triNodes.GetNode(t[0]), triNodes.GetNode(t[1])),
+                        EdgePairKey(triNodes.GetNode(t[1]), triNodes.GetNode(t[2])),
+                        EdgePairKey(triNodes.GetNode(t[2]), triNodes.GetNode(t[0]))
                     };
                     Point2d[] edgeStart = new Point2d[] { t[0], t[1], t[2] };
                     Point2d[] edgeEnd = new Point2d[] { t[1], t[2], t[0] };
@@ -280,8 +476,8 @@ namespace MeshPlugin
                             (edgeStart[side].X + edgeEnd[side].X) / 2.0,
                             (edgeStart[side].Y + edgeEnd[side].Y) / 2.0);
                         bool onWall = false;
-                        foreach (var w in cutSegments)
-                            if (IsPointOnSegment(edgeMid, w[0], w[1], 1e-3)) { onWall = true; break; }
+                        foreach (var w in splitConstraints)
+                            if (IsPointOnSegment(edgeMid, w[0], w[1], MeshTol.OnSegment)) { onWall = true; break; }
                         if (onWall) continue;
 
                         foreach (int j in edgeMap[keys[side]])
@@ -353,9 +549,18 @@ namespace MeshPlugin
                 var innerSegments = RemoveSegmentsOnContour(uniqueSegments, contourPts, out int removedOnContour);
                 innerSegments = ResolveOverlappingSegments(innerSegments, cutSegments, out int removedOnWalls, out int mergedOverlaps);
 
+                // Пустоты для функций зашивания сетки: пилоны И отверстия. Внутрь и той,
+                // и другой сетка не заходит, а узлы на их кромке — граничные (фиксированные,
+                // не «открытые»). Функции WeldShortNodes/CloseOpenNodes/SmoothMesh
+                // используют этот список только для обработки границы пустоты, поэтому
+                // отверстия обрабатываются наравне с пилонами без правок внутри них.
+                // Пилон-специфичный EnsureColumnCornerLinks по-прежнему получает columnPolys.
+                var voidPolys = new List<List<Point2d>>(columnPolys);
+                voidPolys.AddRange(holePolys);
+
                 // Рёбра короче MinElementSize (100 мм) недопустимы: подвижные узлы сетки
                 // смещаются к неподвижной геометрии или сливаются друг с другом.
-                innerSegments = WeldShortNodes(innerSegments, wallSegments, columnPolys, contourPts, out int weldedEdges);
+                innerSegments = WeldShortNodes(innerSegments, wallSegments, voidPolys, contourPts, out int weldedEdges);
                 if (weldedEdges > 0)
                 {
                     innerSegments = DeduplicateSegments(innerSegments);
@@ -372,21 +577,54 @@ namespace MeshPlugin
 
                 // Открытые узлы недопустимы: точка, упершаяся в линию, замыкается
                 // наклонной в соседний узел (угол по возможности близок к 30/45°).
-                innerSegments = CloseOpenNodes(innerSegments, cutSegments, contourPts, columnPolys, cellSize, out int closedNodes);
+                var unclosedNodes = new List<Point2d>();
+                innerSegments = CloseOpenNodes(innerSegments, cutSegments, contourPts, voidPolys, cellSize, out int closedNodes, unclosedNodes);
                 if (closedNodes > 0)
                     innerSegments = SplitSegmentsAtNodes(innerSegments, cellSize, out _);
 
                 // Финальный шаг: сглаживание подвижных узлов для повышения качества α.
-                innerSegments = SmoothMesh(innerSegments, cutSegments, contourPts, columnPolys, xs, ys, out int smoothedNodes);
+                innerSegments = SmoothMesh(innerSegments, cutSegments, contourPts, voidPolys, xs, ys, out int smoothedNodes);
                 if (smoothedNodes > 0)
                     ed.WriteMessage($"\nСглажено узлов (Лаплас): {smoothedNodes}\n");
 
-                // Жёсткое правило: перед отрисовкой отсекается всё, что пересекает
-                // контур плиты или лежит вне его — независимо от того, какой из
-                // предыдущих шагов построил такой отрезок.
-                innerSegments = EnforceInsideContour(innerSegments, contourPts, out int removedOutside);
+                // Жёсткое правило: перед отрисовкой ничто не выходит за контур плиты.
+                // Отрезок, пересекающий контур, не удаляется целиком (после удаления
+                // сетка не дотягивалась до границы), а подрезается: наружная часть
+                // отбрасывается, конец внутренней части ложится точно на контур.
+                innerSegments = ClipSegmentsToContour(innerSegments, contourPts, out int clippedToContour, out int removedOutside);
+                if (clippedToContour > 0)
+                    ed.WriteMessage($"\nПодрезано отрезков по контуру плиты: {clippedToContour}\n");
                 if (removedOutside > 0)
-                    ed.WriteMessage($"\nВНИМАНИЕ: отсечено отрезков, выходивших за контур плиты: {removedOutside}\n");
+                    ed.WriteMessage($"\nВНИМАНИЕ: удалено отрезков целиком вне контура плиты: {removedOutside}\n");
+
+                // Жёсткое правило: внутренность пилона всегда пуста (только точка в
+                // центре). Любой отрезок, залезший внутрь контура пилона, подрезается
+                // по его сторонам; части строго внутри отбрасываются.
+                innerSegments = ClipSegmentsOutsideColumns(innerSegments, columnPolys, out int clippedAtColumns, out int removedInColumns);
+                if (clippedAtColumns + removedInColumns > 0)
+                    ed.WriteMessage($"\nОчистка внутренностей пилонов: подрезано отрезков: {clippedAtColumns}, удалено целиком внутри: {removedInColumns}\n");
+
+                // То же правило для отверстий: внутри проёма ничего не остаётся.
+                if (holePolys.Count > 0)
+                {
+                    innerSegments = ClipSegmentsOutsideColumns(innerSegments, holePolys, out int clippedAtHoles, out int removedInHoles);
+                    if (clippedAtHoles + removedInHoles > 0)
+                        ed.WriteMessage($"\nОчистка отверстий: подрезано отрезков: {clippedAtHoles}, удалено целиком внутри: {removedInHoles}\n");
+                }
+
+                // Узлы на косяках дверных проёмов: рёбра стены (и любые рёбра, проходящие
+                // через конец дверного отрезка) режем ровно в этих точках, чтобы кусок
+                // стены точно совпал с проёмом при экспорте.
+                if (doorEnds.Count > 0)
+                {
+                    innerSegments = SplitSegmentsAtPoints(innerSegments, doorEnds, MeshTol.DoorOnAxis, out int doorSplits);
+                    if (doorSplits > 0)
+                        ed.WriteMessage($"\nУзлов сетки врезано на косяках дверных проёмов: {doorSplits}\n");
+                }
+
+                // Постусловия: то, что конвейер обязан был обеспечить своими этапами,
+                // проверяется числом, а не на глаз по чертежу (см. SelfCheck.cs).
+                RunMeshSelfCheck(ed, innerSegments, contourPts, voidPolys);
 
                 foreach (var seg in innerSegments)
                     DrawSegment(btr, tr, seg[0], seg[1]);
@@ -398,6 +636,22 @@ namespace MeshPlugin
                     ed.WriteMessage($"\nКонтуров пилонов разбито на отрезки в {TriangulationLayerName}: {explodedColumns}\n");
 
                 ed.WriteMessage($"\nОтрезков всего: {allSegments.Count}, после удаления совпадающих: {uniqueSegments.Count}, удалено по внешнему контуру: {removedOnContour}, срезано по стенам: {removedOnWalls}, устранено наложений: {mergedOverlaps}, схлопнуто коротких рёбер: {weldedEdges}, связей углов пилонов: {cornerLinks}, разбито рёбер узлами: {splitEdges}, замкнуто открытых узлов: {closedNodes}, итог: {innerSegments.Count}\n");
+
+                // Маркировка проблем: центры нетриангулированных полигонов и открытые
+                // узлы, которые не удалось замкнуть, — красные круги в слое проблем.
+                // Страховка: точку строго внутри пустоты (проёма/пилона) НЕ помечаем —
+                // сетки там и не должно быть, а «незамкнутость» фиксировалась ДО финальной
+                // обрезки проёмов и оставляла осиротевшие круги в пустоте.
+                var problemPts = new List<Point2d>();
+                foreach (var p in failedPolygonPts)
+                    if (!PointInsideAnyVoid(p, voidPolys)) problemPts.Add(p);
+                foreach (var p in unclosedNodes)
+                    if (!PointInsideAnyVoid(p, voidPolys)) problemPts.Add(p);
+                if (problemPts.Count > 0)
+                {
+                    DrawMarkCircles(tr, db, ProblemLayerName, problemPts, ProblemMarkRadius);
+                    ed.WriteMessage($"\nВНИМАНИЕ: проблемных мест сетки: {problemPts.Count} (не разбитых полигонов: {failedPolygonPts.Count}, незамкнутых узлов: {unclosedNodes.Count}) — отмечены кругами в слое {ProblemLayerName}. Поправьте расположение объектов в этих местах и перестройте сетку.\n");
+                }
 
                 tr.Commit();
             }
@@ -458,14 +712,14 @@ namespace MeshPlugin
                 if (OnGridCoord(p.X, xs) && OnGridCoord(p.Y, ys)) return true;
 
                 foreach (var w in cutSegments)
-                    if (IsPointOnSegment(p, w[0], w[1], 1e-3)) return true;
+                    if (IsPointOnSegment(p, w[0], w[1], MeshTol.OnSegment)) return true;
 
                 foreach (var c in columnCenters)
-                    if (p.GetDistanceTo(c) < 1e-3) return true;
+                    if (p.GetDistanceTo(c) < MeshTol.NodeMerge) return true;
 
                 int cn = contourPts.Count;
                 for (int i = 0; i < cn; i++)
-                    if (IsPointOnSegment(p, contourPts[i], contourPts[(i + 1) % cn], 1e-3)) return true;
+                    if (IsPointOnSegment(p, contourPts[i], contourPts[(i + 1) % cn], MeshTol.OnSegment)) return true;
 
                 return false;
             }
@@ -498,7 +752,7 @@ namespace MeshPlugin
                     foreach (int nb in neighbors[i]) { ax += nodes[nb].X; ay += nodes[nb].Y; }
                     Point2d newP = new Point2d(ax / neighbors[i].Count, ay / neighbors[i].Count);
 
-                    if (newP.GetDistanceTo(nodes[i]) < 1e-3) continue;
+                    if (newP.GetDistanceTo(nodes[i]) < MeshTol.NodeMerge) continue;
                     if (!IsPointInPolygon(newP, contourPts)) continue;
 
                     bool inColumn = false;
@@ -523,7 +777,7 @@ namespace MeshPlugin
             foreach (var sn in segNodes)
             {
                 Point2d a = nodes[sn[0]], b = nodes[sn[1]];
-                if (a.GetDistanceTo(b) < 1e-3) continue;
+                if (a.GetDistanceTo(b) < MeshTol.NodeMerge) continue;
                 result.Add(new Point2d[] { a, b });
             }
             return result;
@@ -554,21 +808,21 @@ namespace MeshPlugin
             bool IsFixedPoint(Point2d p)
             {
                 foreach (var w in wallSegments)
-                    if (IsPointOnSegment(p, w[0], w[1], 1e-3)) return true;
+                    if (IsPointOnSegment(p, w[0], w[1], MeshTol.OnSegment)) return true;
 
                 foreach (var col in columnPolys)
                 {
                     int n = col.Count;
                     for (int i = 0; i < n; i++)
-                        if (IsPointOnSegment(p, col[i], col[(i + 1) % n], 1e-3)) return true;
+                        if (IsPointOnSegment(p, col[i], col[(i + 1) % n], MeshTol.OnSegment)) return true;
                 }
 
                 foreach (var c in columnCenters)
-                    if (p.GetDistanceTo(c) < 1e-3) return true;
+                    if (p.GetDistanceTo(c) < MeshTol.NodeMerge) return true;
 
                 int cn = contourPts.Count;
                 for (int i = 0; i < cn; i++)
-                    if (IsPointOnSegment(p, contourPts[i], contourPts[(i + 1) % cn], 1e-3)) return true;
+                    if (IsPointOnSegment(p, contourPts[i], contourPts[(i + 1) % cn], MeshTol.OnSegment)) return true;
 
                 return false;
             }
@@ -622,7 +876,7 @@ namespace MeshPlugin
             {
                 Point2d a = nodes[target[segNodes[k][0]]];
                 Point2d b = nodes[target[segNodes[k][1]]];
-                if (a.GetDistanceTo(b) < 1e-3) { weldedCount++; continue; }
+                if (a.GetDistanceTo(b) < MeshTol.NodeMerge) { weldedCount++; continue; }
                 result.Add(new Point2d[] { a, b });
             }
             return result;
@@ -631,44 +885,202 @@ namespace MeshPlugin
         // Координаты линий сетки: равномерный шаг, но линия, оказавшаяся ближе
         // min(30% шага, 100 мм) к грани пилона, смещается на неё — так проще,
         // чем городить наклонные линии.
+        // Режет отрезки в заданных точках (концах дверных проёмов): если точка лежит
+        // строго внутри отрезка, он делится на два с общим узлом. Так в сетке
+        // появляются узлы на косяках двери, и куски стены точно совпадают с проёмом.
+        private List<Point2d[]> SplitSegmentsAtPoints(List<Point2d[]> segments, List<Point2d> points, double tol, out int splitCount)
+        {
+            splitCount = 0;
+            if (points == null || points.Count == 0) return segments;
+
+            var result = new List<Point2d[]>();
+            foreach (var seg in segments)
+            {
+                var cuts = new List<Point2d>();
+                foreach (var p in points)
+                {
+                    if (p.GetDistanceTo(seg[0]) < tol || p.GetDistanceTo(seg[1]) < tol) continue; // уже узел
+                    if (IsPointOnSegment(p, seg[0], seg[1], tol)) cuts.Add(p);
+                }
+                if (cuts.Count == 0) { result.Add(seg); continue; }
+
+                cuts.Sort((a, b) => seg[0].GetDistanceTo(a).CompareTo(seg[0].GetDistanceTo(b)));
+                Point2d cur = seg[0];
+                foreach (var c in cuts)
+                {
+                    if (cur.GetDistanceTo(c) > tol) { result.Add(new Point2d[] { cur, c }); cur = c; splitCount++; }
+                }
+                if (cur.GetDistanceTo(seg[1]) > tol) result.Add(new Point2d[] { cur, seg[1] });
+            }
+            return result;
+        }
+
+        // Координаты линий сетки: равномерный шаг + подгонка под «цели» — грани
+        // пилонов, кромки отверстий, косяки дверей, концы и середины осей пилонов.
+        //
+        // targets     — «мягкие» цели: линия двигается на цель, только если она в
+        //               пределах maxShift; иначе цель просто не достигается.
+        // hardTargets — «жёсткие» цели (кромки отверстий): линия на цели
+        //               гарантируется — ближайшую двигаем, если рядом, иначе
+        //               вставляем новую.
+        //
+        // Два правила, без которых подгонка сама портит сетку:
+        //  1. ОДНА ЛИНИЯ — ОДНА ЦЕЛЬ. Раньше цели обрабатывались подряд и могли
+        //     двигать одну и ту же линию: последняя побеждала, а первая оставалась
+        //     неудовлетворённой, хотя рядом была свободная линия. Теперь занятая
+        //     линия помечается и другой цели не отдаётся.
+        //  2. НИКАКИХ СЛАЙВЕРОВ. Сдвиг или вставка, после которых просвет до соседней
+        //     линии меньше MinGridGap, не выполняется: именно так у осей пилонов и
+        //     косяков дверей появлялись элементы в единицы миллиметров. Мягкая цель в
+        //     этом случае отбрасывается, жёсткая — сообщается в rejectedCount.
+        //
+        // Цели обрабатываются от ближайших к своей линии к дальним: близкой цели
+        // сдвиг почти ничего не стоит, и она не должна проигрывать дальней.
         private List<double> BuildGridCoords(
             double min, double max, double step,
             List<double> targets,
-            out int shiftedCount)
+            List<double> hardTargets,
+            out int shiftedCount,
+            out int insertedCount,
+            out int rejectedCount)
         {
             shiftedCount = 0;
+            insertedCount = 0;
+            rejectedCount = 0;
 
             var coords = new List<double>();
             double v = min;
-            while (v < max - 1e-9) { coords.Add(v); v += step; }
+            while (v < max - MeshTol.Zero) { coords.Add(v); v += step; }
             coords.Add(v);
 
-            double maxShift = Math.Min(0.3 * step, 100.0);
+            double maxShift = MeshTol.MaxShift(step);
+            double minGap = MeshTol.MinGridGap(step);
 
-            foreach (var t in targets)
+            // Линии, которые двигать и удалять нельзя: закреплённые за целью и две
+            // крайние. Крайние — это границы плана: сдвинув или убрав их, мы оставим
+            // у края плиты полосу, не покрытую ни одной ячейкой, то есть дыру в сетке.
+            var locked = new HashSet<double>();
+            locked.Add(coords[0]);
+            locked.Add(coords[coords.Count - 1]);
+
+            // Просвет до соседей, если линию с индексом idx поставить в позицию t
+            // (idx < 0 — линия вставляется новой).
+            bool GapOk(int idx, double t)
             {
-                if (t < coords[0] - 1e-9 || t > coords[coords.Count - 1] + 1e-9) continue;
-
-                int best = -1;
-                double bestD = maxShift + 1e-9;
                 for (int i = 0; i < coords.Count; i++)
                 {
-                    double d = Math.Abs(coords[i] - t);
-                    if (d < bestD) { bestD = d; best = i; }
+                    if (i == idx) continue;
+                    if (Math.Abs(coords[i] - t) < minGap - MeshTol.Zero) return false;
                 }
+                return true;
+            }
 
-                if (best >= 0 && Math.Abs(coords[best] - t) > 1e-9)
+            // Ближайшая к цели НЕзакреплённая линия.
+            int NearestFree(double t, out double dist)
+            {
+                int best = -1;
+                dist = double.MaxValue;
+                for (int i = 0; i < coords.Count; i++)
+                {
+                    if (locked.Contains(coords[i])) continue;
+                    double d = Math.Abs(coords[i] - t);
+                    if (d < dist) { dist = d; best = i; }
+                }
+                return best;
+            }
+
+            // Цели: убираем дубликаты и вышедшие за границы плана, сортируем по
+            // расстоянию до ближайшей линии.
+            List<double> PrepareTargets(List<double> src)
+            {
+                var list = new List<double>();
+                if (src == null) return list;
+                foreach (var t in src)
+                {
+                    if (t < coords[0] - MeshTol.Zero || t > coords[coords.Count - 1] + MeshTol.Zero) continue;
+                    bool dup = false;
+                    foreach (var u in list)
+                        if (Math.Abs(u - t) < MeshTol.NodeMerge) { dup = true; break; }
+                    if (!dup) list.Add(t);
+                }
+                list.Sort((a, b) =>
+                {
+                    double da, db;
+                    NearestFree(a, out da);
+                    NearestFree(b, out db);
+                    return da.CompareTo(db);
+                });
+                return list;
+            }
+
+            // Жёсткие цели идут первыми: линию на кромке отверстия обязаны получить
+            // все, а мягкая цель — только если осталась свободная линия.
+            foreach (var t in PrepareTargets(hardTargets))
+            {
+                double d;
+                int best = NearestFree(t, out d);
+
+                // Линия уже стоит на цели (могла быть поставлена другой целью).
+                bool already = false;
+                foreach (var c in coords)
+                    if (Math.Abs(c - t) < MeshTol.NodeMerge) { already = true; break; }
+                if (already) { locked.Add(t); continue; }
+
+                if (best >= 0 && d <= maxShift && GapOk(best, t))
                 {
                     coords[best] = t;
+                    locked.Add(t);
                     shiftedCount++;
                 }
+                else
+                {
+                    // Линия на кромке отверстия обязана быть, поэтому вставляем свою.
+                    // Обычные линии сетки, оказавшиеся к ней ближе минимального
+                    // просвета, убираем: ячейка станет шире, зато полосы в единицы
+                    // миллиметров не будет. Закреплённые за другими целями линии не
+                    // трогаем — если помешала такая, цель пропускается.
+                    coords.RemoveAll(c => !locked.Contains(c) && Math.Abs(c - t) < minGap - MeshTol.Zero);
+
+                    if (GapOk(-1, t))
+                    {
+                        coords.Add(t);
+                        locked.Add(t);
+                        insertedCount++;
+                    }
+                    else
+                    {
+                        rejectedCount++;
+                    }
+                }
+                coords.Sort();
+            }
+
+            foreach (var t in PrepareTargets(targets))
+            {
+                bool already = false;
+                foreach (var c in coords)
+                    if (Math.Abs(c - t) < MeshTol.NodeMerge) { already = true; break; }
+                if (already) { locked.Add(t); continue; }
+
+                double d;
+                int best = NearestFree(t, out d);
+                // Цель дальше допустимого сдвига — обычное дело (ради мягкой цели
+                // линию через весь план не вставляем), в счётчик конфликтов не идёт.
+                if (best >= 0 && d > maxShift) continue;
+                if (best < 0) { rejectedCount++; continue; }      // все линии рядом заняты
+                if (!GapOk(best, t)) { rejectedCount++; continue; } // сдвиг дал бы слайвер
+
+                coords[best] = t;
+                locked.Add(t);
+                shiftedCount++;
+                coords.Sort();
             }
 
             coords.Sort();
             var result = new List<double>();
             foreach (var c in coords)
             {
-                if (result.Count > 0 && c - result[result.Count - 1] < 1e-6) continue;
+                if (result.Count > 0 && c - result[result.Count - 1] < MeshTol.NodeMerge) continue;
                 result.Add(c);
             }
             return result;
@@ -684,7 +1096,8 @@ namespace MeshPlugin
             List<Point2d> contourPts,
             List<List<Point2d>> columnPolys,
             double cellSize,
-            out int closedCount)
+            out int closedCount,
+            List<Point2d> unclosedNodes)
         {
             closedCount = 0;
 
@@ -707,17 +1120,17 @@ namespace MeshPlugin
             {
                 for (int i = 0; i < nodes.Count; i++)
                 {
-                    if (!IsPointOnSegment(nodes[i], w[0], w[1], 1e-3)) continue;
-                    if (nodes[i].GetDistanceTo(w[0]) > 1e-3)
+                    if (!IsPointOnSegment(nodes[i], w[0], w[1], MeshTol.OnSegment)) continue;
+                    if (nodes[i].GetDistanceTo(w[0]) > MeshTol.NodeMerge)
                         dirs[i].Add(Math.Atan2(w[0].Y - nodes[i].Y, w[0].X - nodes[i].X));
-                    if (nodes[i].GetDistanceTo(w[1]) > 1e-3)
+                    if (nodes[i].GetDistanceTo(w[1]) > MeshTol.NodeMerge)
                         dirs[i].Add(Math.Atan2(w[1].Y - nodes[i].Y, w[1].X - nodes[i].X));
                 }
             }
 
             var newSegs = new List<Point2d[]>();
             double twoPi = 2.0 * Math.PI;
-            double candidateRadius = 1.6 * cellSize;
+            double candidateRadius = MeshTol.CloseRadiusFactor * cellSize;
 
             // Кандидаты на замыкание ищутся только среди узлов из соседних бакетов сетки,
             // а не перебором всех узлов плана.
@@ -734,7 +1147,7 @@ namespace MeshPlugin
                 bool onContour = false;
                 int cn = contourPts.Count;
                 for (int k = 0; k < cn; k++)
-                    if (IsPointOnSegment(nodes[i], contourPts[k], contourPts[(k + 1) % cn], 1e-3)) { onContour = true; break; }
+                    if (IsPointOnSegment(nodes[i], contourPts[k], contourPts[(k + 1) % cn], MeshTol.OnSegment)) { onContour = true; break; }
                 if (onContour) continue;
 
                 // узлы на контуре пилона не замыкаем — внутрь пилона сетка не идёт
@@ -743,7 +1156,7 @@ namespace MeshPlugin
                 {
                     int nc = col.Count;
                     for (int k = 0; k < nc; k++)
-                        if (IsPointOnSegment(nodes[i], col[k], col[(k + 1) % nc], 1e-3)) { onColumn = true; break; }
+                        if (IsPointOnSegment(nodes[i], col[k], col[(k + 1) % nc], MeshTol.OnSegment)) { onColumn = true; break; }
                     if (onColumn) break;
                 }
                 if (onColumn) continue;
@@ -766,7 +1179,8 @@ namespace MeshPlugin
                 double lo = gapStart + margin;
                 double hi = gapStart + maxGap - margin;
 
-                int best = -1;
+                Point2d bestTarget = Point2d.Origin;
+                bool hasBest = false;
                 double bestScore = double.MaxValue;
 
                 foreach (int j in candidateGrid.QueryRadius(nodes[i], candidateRadius))
@@ -804,13 +1218,125 @@ namespace MeshPlugin
                         Math.Min(Math.Abs(d1 - 45.0), Math.Abs(d1 - 30.0)));
 
                     double score = d / cellSize + dev / 90.0;
-                    if (score < bestScore) { bestScore = score; best = j; }
+                    if (score < bestScore) { bestScore = score; bestTarget = nodes[j]; hasBest = true; }
                 }
 
-                if (best >= 0)
+                // Кандидаты на самом контуре плиты: проекция открытого узла на ближайшие
+                // стороны. Узел, упёршийся у границы без подходящего соседа в сетке,
+                // дотягивается до контура; новый узел на контуре чуть дороже готового.
+                for (int k = 0; k < cn; k++)
                 {
-                    newSegs.Add(new Point2d[] { nodes[i], nodes[best] });
+                    Point2d c1 = contourPts[k];
+                    Point2d c2 = contourPts[(k + 1) % cn];
+                    double ex = c2.X - c1.X, ey = c2.Y - c1.Y;
+                    double elenSq = ex * ex + ey * ey;
+                    if (elenSq < MeshTol.ZeroSq) continue;
+
+                    double t = ((nodes[i].X - c1.X) * ex + (nodes[i].Y - c1.Y) * ey) / elenSq;
+                    if (t < 0.0) t = 0.0; else if (t > 1.0) t = 1.0;
+                    Point2d proj = new Point2d(c1.X + ex * t, c1.Y + ey * t);
+
+                    double d = nodes[i].GetDistanceTo(proj);
+                    if (d < MinElementSize - 0.1 || d > candidateRadius) continue;
+
+                    double a = Math.Atan2(proj.Y - nodes[i].Y, proj.X - nodes[i].X);
+                    while (a < gapStart) a += twoPi;
+                    if (a < lo || a > hi) continue;
+
+                    bool crosses = false;
+                    foreach (var w in cutSegments)
+                        if (SegmentsIntersect(nodes[i], proj, w[0], w[1])) { crosses = true; break; }
+                    if (crosses) continue;
+
+                    foreach (var s in segments)
+                        if (SegmentsIntersect(nodes[i], proj, s[0], s[1])) { crosses = true; break; }
+                    if (crosses) continue;
+
+                    for (int m = 0; m < cn && !crosses; m++)
+                        if (SegmentsIntersect(nodes[i], proj, contourPts[m], contourPts[(m + 1) % cn])) crosses = true;
+                    if (crosses) continue;
+                    Point2d midIP = new Point2d((nodes[i].X + proj.X) / 2.0, (nodes[i].Y + proj.Y) / 2.0);
+                    if (!IsPointInPolygon(midIP, contourPts)) continue;
+
+                    double d0 = (a - gapStart) * 180.0 / Math.PI;
+                    double d1 = (gapStart + maxGap - a) * 180.0 / Math.PI;
+                    double dev = Math.Min(
+                        Math.Min(Math.Abs(d0 - 45.0), Math.Abs(d0 - 30.0)),
+                        Math.Min(Math.Abs(d1 - 45.0), Math.Abs(d1 - 30.0)));
+
+                    double score = d / cellSize + dev / 90.0 + 0.1;
+                    if (score < bestScore) { bestScore = score; bestTarget = proj; hasBest = true; }
+                }
+
+                // Кандидаты на гранях пустот (пилоны И отверстия): проекция открытого узла
+                // на ближайшую сторону пустоты. Узел у кромки проёма, которому сосед через
+                // пустоту недопустим (пересёк бы cutSegments), дотягивается до самой кромки —
+                // на грани отверстия создаётся узел. Это выполняет требование: при обрезке
+                // сетки узлы обязаны садиться на грань отверстия, как на контур плиты.
+                foreach (var vpoly in columnPolys)
+                {
+                    int vn = vpoly.Count;
+                    for (int k = 0; k < vn; k++)
+                    {
+                        Point2d c1 = vpoly[k];
+                        Point2d c2 = vpoly[(k + 1) % vn];
+                        double ex = c2.X - c1.X, ey = c2.Y - c1.Y;
+                        double elenSq = ex * ex + ey * ey;
+                        if (elenSq < MeshTol.ZeroSq) continue;
+
+                        double t = ((nodes[i].X - c1.X) * ex + (nodes[i].Y - c1.Y) * ey) / elenSq;
+                        if (t < 0.0) t = 0.0; else if (t > 1.0) t = 1.0;
+                        Point2d proj = new Point2d(c1.X + ex * t, c1.Y + ey * t);
+
+                        double d = nodes[i].GetDistanceTo(proj);
+                        if (d < MinElementSize - 0.1 || d > candidateRadius) continue;
+
+                        double a = Math.Atan2(proj.Y - nodes[i].Y, proj.X - nodes[i].X);
+                        while (a < gapStart) a += twoPi;
+                        if (a < lo || a > hi) continue;
+
+                        bool crosses = false;
+                        foreach (var w in cutSegments)
+                            if (SegmentsIntersect(nodes[i], proj, w[0], w[1])) { crosses = true; break; }
+                        if (crosses) continue;
+
+                        foreach (var s in segments)
+                            if (SegmentsIntersect(nodes[i], proj, s[0], s[1])) { crosses = true; break; }
+                        if (crosses) continue;
+
+                        for (int m = 0; m < cn && !crosses; m++)
+                            if (SegmentsIntersect(nodes[i], proj, contourPts[m], contourPts[(m + 1) % cn])) crosses = true;
+                        if (crosses) continue;
+
+                        // Замыкающая линия должна остаться в плите и не нырять внутрь пустоты.
+                        Point2d midIP = new Point2d((nodes[i].X + proj.X) / 2.0, (nodes[i].Y + proj.Y) / 2.0);
+                        if (!IsPointInPolygon(midIP, contourPts)) continue;
+                        bool midInVoid = false;
+                        foreach (var vp2 in columnPolys)
+                            if (IsPointInPolygon(midIP, vp2)) { midInVoid = true; break; }
+                        if (midInVoid) continue;
+
+                        double d0 = (a - gapStart) * 180.0 / Math.PI;
+                        double d1 = (gapStart + maxGap - a) * 180.0 / Math.PI;
+                        double dev = Math.Min(
+                            Math.Min(Math.Abs(d0 - 45.0), Math.Abs(d0 - 30.0)),
+                            Math.Min(Math.Abs(d1 - 45.0), Math.Abs(d1 - 30.0)));
+
+                        double score = d / cellSize + dev / 90.0 + 0.1;
+                        if (score < bestScore) { bestScore = score; bestTarget = proj; hasBest = true; }
+                    }
+                }
+
+                if (hasBest)
+                {
+                    newSegs.Add(new Point2d[] { nodes[i], bestTarget });
                     closedCount++;
+                }
+                else
+                {
+                    // Открытый узел, для которого не нашлось допустимого замыкания, —
+                    // из-за расположения объектов сетка здесь остаётся с обрывом.
+                    unclosedNodes?.Add(nodes[i]);
                 }
             }
 
@@ -827,22 +1353,22 @@ namespace MeshPlugin
         {
             splitCount = 0;
 
-            var nodes = new List<Point2d>();
-            var seen = new HashSet<string>();
+            // Список уникальных узлов: совпадение по допуску слияния, а не по
+            // округлённым координатам (иначе один узел мог попасть в список дважды
+            // и «резать» отрезок сам об себя).
+            var ni = new NodeIndex();
             foreach (var seg in segments)
             {
-                foreach (var p in seg)
-                {
-                    string key = Math.Round(p.X, 3) + "_" + Math.Round(p.Y, 3);
-                    if (seen.Add(key)) nodes.Add(p);
-                }
+                ni.GetNode(seg[0]);
+                ni.GetNode(seg[1]);
             }
+            var nodes = ni.Nodes;
 
             // Узлы, потенциально лежащие на отрезке, ищутся через пространственную сетку
             // (только узлы в радиусе длины отрезка вокруг его начала), а не перебором всех узлов плана.
             var nodeGrid = new SpatialGrid(Math.Max(cellSize, 1.0));
-            for (int ni = 0; ni < nodes.Count; ni++)
-                nodeGrid.Add(ni, nodes[ni]);
+            for (int i = 0; i < nodes.Count; i++)
+                nodeGrid.Add(i, nodes[i]);
 
             var result = new List<Point2d[]>();
 
@@ -851,15 +1377,15 @@ namespace MeshPlugin
                 Point2d a = seg[0], b = seg[1];
                 double dx = b.X - a.X, dy = b.Y - a.Y;
                 double lenSq = dx * dx + dy * dy;
-                if (lenSq < 1e-12) continue;
+                if (lenSq < MeshTol.ZeroSq) continue;
                 double segLen = Math.Sqrt(lenSq);
 
                 var cuts = new List<KeyValuePair<double, Point2d>>();
                 foreach (int nodeIdx in nodeGrid.QueryRadius(a, segLen))
                 {
                     Point2d node = nodes[nodeIdx];
-                    if (node.GetDistanceTo(a) < 1e-3 || node.GetDistanceTo(b) < 1e-3) continue;
-                    if (!IsPointOnSegment(node, a, b, 1e-3)) continue;
+                    if (node.GetDistanceTo(a) < MeshTol.NodeMerge || node.GetDistanceTo(b) < MeshTol.NodeMerge) continue;
+                    if (!IsPointOnSegment(node, a, b, MeshTol.OnSegment)) continue;
 
                     double t = ((node.X - a.X) * dx + (node.Y - a.Y) * dy) / lenSq;
                     if (t > 1e-6 && t < 1.0 - 1e-6)
@@ -919,7 +1445,7 @@ namespace MeshPlugin
                     int incident = 0;
                     foreach (int pi in endpointGrid.QueryRadius(corner, queryRadius))
                     {
-                        if (endpoints[pi].GetDistanceTo(corner) < 1e-3)
+                        if (endpoints[pi].GetDistanceTo(corner) < MeshTol.NodeMerge)
                             incident++;
                     }
                     if (incident >= 2) continue;
@@ -931,12 +1457,12 @@ namespace MeshPlugin
                     {
                         Point2d p = endpoints[pi];
                         double d = p.GetDistanceTo(corner);
-                        if (d < 1e-3 || d > cellSize + 1e-6 || d >= bestDist) continue;
+                        if (d < MeshTol.NodeMerge || d > cellSize + 1e-6 || d >= bestDist) continue;
                         if (IsPointInPolygon(p, col)) continue;
 
                         bool onEdge = false;
                         for (int k = 0; k < n; k++)
-                            if (IsPointOnSegment(p, col[k], col[(k + 1) % n], 1e-3)) { onEdge = true; break; }
+                            if (IsPointOnSegment(p, col[k], col[(k + 1) % n], MeshTol.OnSegment)) { onEdge = true; break; }
                         if (onEdge) continue;
 
                         best = p;
@@ -984,6 +1510,34 @@ namespace MeshPlugin
             return false;
         }
 
+        // Ячейка считается внутренней по ЦЕНТРУ (в отличие от CellInsideAnyColumn,
+        // требующего все 4 угла внутри). Нужно для проёмов: ячейка, чья внешняя грань
+        // лежит точно на кромке, имеет углы на границе полигона, и проверка по углам её
+        // пропускала. Центр прямоугольной ячейки всегда строго внутри своего проёма.
+        private bool CellCenterInsideAnyColumn(Point2d[] cell, List<List<Point2d>> columns)
+        {
+            if (columns.Count == 0) return false;
+
+            double cx = 0, cy = 0;
+            foreach (var p in cell) { cx += p.X; cy += p.Y; }
+            Point2d c = new Point2d(cx / cell.Length, cy / cell.Length);
+
+            foreach (var col in columns)
+            {
+                if (IsPointInPolygon(c, col)) return true;
+            }
+            return false;
+        }
+
+        // Точка строго внутри хотя бы одной пустоты (проёма/пилона).
+        private bool PointInsideAnyVoid(Point2d p, List<List<Point2d>> voids)
+        {
+            if (voids == null) return false;
+            foreach (var v in voids)
+                if (IsPointInPolygon(p, v)) return true;
+            return false;
+        }
+
 
         private void DrawSegment(BlockTableRecord btr, Transaction tr, Point2d a, Point2d b)
         {
@@ -1008,39 +1562,138 @@ namespace MeshPlugin
         }
 
         // Последний рубеж перед отрисовкой: ни один отрезок сетки не может пересекать
-        // контур плиты или лежать снаружи. Пересечение ловится по сторонам контура,
-        // выход наружу без пересечения (вогнутый контур, концы на границе) — по середине
-        // отрезка; середина, лежащая на самом контуре, наружу не считается.
-        private List<Point2d[]> EnforceInsideContour(
+        // контур плиты или лежать снаружи, но и удалять пересекающий отрезок целиком
+        // нельзя — сетка перестаёт дотягиваться до границы. Отрезок режется точками
+        // пересечения со сторонами контура на части; наружные части (по середине,
+        // с учётом вогнутого контура) отбрасываются, внутренние остаются, их концы
+        // ложатся точно на контур. Части короче 1 мм считаются мусором.
+        private List<Point2d[]> ClipSegmentsToContour(
             List<Point2d[]> segments,
             List<Point2d> contourPts,
+            out int clippedCount,
             out int removedOutside)
         {
+            clippedCount = 0;
             removedOutside = 0;
             var result = new List<Point2d[]>();
             int cn = contourPts.Count;
 
             foreach (var seg in segments)
             {
-                bool bad = false;
+                Point2d a = seg[0], b = seg[1];
+                double len = a.GetDistanceTo(b);
+                if (len < 1e-9) continue;
 
-                for (int i = 0; i < cn && !bad; i++)
-                    if (SegmentsIntersect(seg[0], seg[1], contourPts[i], contourPts[(i + 1) % cn]))
-                        bad = true;
-
-                if (!bad)
+                // Параметры (0..1) точек пересечения отрезка со сторонами контура
+                var ts = new List<double> { 0.0, 1.0 };
+                for (int i = 0; i < cn; i++)
                 {
-                    Point2d mid = new Point2d((seg[0].X + seg[1].X) / 2.0, (seg[0].Y + seg[1].Y) / 2.0);
+                    Point2d c1 = contourPts[i];
+                    Point2d c2 = contourPts[(i + 1) % cn];
+                    if (!SegmentsIntersect(a, b, c1, c2)) continue;
+
+                    double denom = (b.X - a.X) * (c2.Y - c1.Y) - (b.Y - a.Y) * (c2.X - c1.X);
+                    if (Math.Abs(denom) < 1e-12) continue;
+                    double t = ((c1.X - a.X) * (c2.Y - c1.Y) - (c1.Y - a.Y) * (c2.X - c1.X)) / denom;
+                    if (t > 1e-9 && t < 1.0 - 1e-9) ts.Add(t);
+                }
+                ts.Sort();
+
+                int keptParts = 0;
+                bool trimmed = false;
+                for (int i = 0; i + 1 < ts.Count; i++)
+                {
+                    double t0 = ts[i], t1 = ts[i + 1];
+                    if ((t1 - t0) * len < MeshTol.MinPiece) { trimmed = true; continue; }
+
+                    Point2d p0 = new Point2d(a.X + (b.X - a.X) * t0, a.Y + (b.Y - a.Y) * t0);
+                    Point2d p1 = new Point2d(a.X + (b.X - a.X) * t1, a.Y + (b.Y - a.Y) * t1);
+                    Point2d mid = new Point2d((p0.X + p1.X) / 2.0, (p0.Y + p1.Y) / 2.0);
+
                     bool onEdge = false;
-                    for (int i = 0; i < cn && !onEdge; i++)
-                        if (IsPointOnSegment(mid, contourPts[i], contourPts[(i + 1) % cn], 1e-3))
+                    for (int k = 0; k < cn && !onEdge; k++)
+                        if (IsPointOnSegment(mid, contourPts[k], contourPts[(k + 1) % cn], MeshTol.OnSegment))
                             onEdge = true;
-                    if (!onEdge && !IsPointInPolygon(mid, contourPts))
-                        bad = true;
+                    if (!onEdge && !IsPointInPolygon(mid, contourPts)) { trimmed = true; continue; }
+
+                    result.Add(new Point2d[] { p0, p1 });
+                    keptParts++;
                 }
 
-                if (bad) removedOutside++;
-                else result.Add(seg);
+                if (keptParts == 0) removedOutside++;
+                else if (trimmed) clippedCount++;
+            }
+            return result;
+        }
+
+        // Зеркально ClipSegmentsToContour, но для пилонов: внутренность пилона пуста,
+        // поэтому отрезок режется точками пересечения со сторонами всех пилонов, части
+        // с серединой строго внутри какого-либо пилона отбрасываются. Части, лежащие
+        // на самих сторонах пилона, остаются (это грани, врезанные в сетку).
+        private List<Point2d[]> ClipSegmentsOutsideColumns(
+            List<Point2d[]> segments,
+            List<List<Point2d>> columnPolys,
+            out int clippedCount,
+            out int removedInside)
+        {
+            clippedCount = 0;
+            removedInside = 0;
+            if (columnPolys.Count == 0) return segments;
+            var result = new List<Point2d[]>();
+
+            foreach (var seg in segments)
+            {
+                Point2d a = seg[0], b = seg[1];
+                double len = a.GetDistanceTo(b);
+                if (len < 1e-9) continue;
+
+                var ts = new List<double> { 0.0, 1.0 };
+                foreach (var col in columnPolys)
+                {
+                    int cn = col.Count;
+                    for (int i = 0; i < cn; i++)
+                    {
+                        Point2d c1 = col[i];
+                        Point2d c2 = col[(i + 1) % cn];
+                        if (!SegmentsIntersect(a, b, c1, c2)) continue;
+
+                        double denom = (b.X - a.X) * (c2.Y - c1.Y) - (b.Y - a.Y) * (c2.X - c1.X);
+                        if (Math.Abs(denom) < 1e-12) continue;
+                        double t = ((c1.X - a.X) * (c2.Y - c1.Y) - (c1.Y - a.Y) * (c2.X - c1.X)) / denom;
+                        if (t > 1e-9 && t < 1.0 - 1e-9) ts.Add(t);
+                    }
+                }
+                ts.Sort();
+
+                int keptParts = 0;
+                bool trimmed = false;
+                for (int i = 0; i + 1 < ts.Count; i++)
+                {
+                    double t0 = ts[i], t1 = ts[i + 1];
+                    if ((t1 - t0) * len < MeshTol.MinPiece) { trimmed = true; continue; }
+
+                    Point2d p0 = new Point2d(a.X + (b.X - a.X) * t0, a.Y + (b.Y - a.Y) * t0);
+                    Point2d p1 = new Point2d(a.X + (b.X - a.X) * t1, a.Y + (b.Y - a.Y) * t1);
+                    Point2d mid = new Point2d((p0.X + p1.X) / 2.0, (p0.Y + p1.Y) / 2.0);
+
+                    bool insideColumn = false;
+                    foreach (var col in columnPolys)
+                    {
+                        bool onEdge = false;
+                        int cn = col.Count;
+                        for (int k = 0; k < cn && !onEdge; k++)
+                            if (IsPointOnSegment(mid, col[k], col[(k + 1) % cn], MeshTol.OnSegment))
+                                onEdge = true;
+                        if (!onEdge && IsPointInPolygon(mid, col)) { insideColumn = true; break; }
+                    }
+                    if (insideColumn) { trimmed = true; continue; }
+
+                    result.Add(new Point2d[] { p0, p1 });
+                    keptParts++;
+                }
+
+                if (keptParts == 0) removedInside++;
+                else if (trimmed) clippedCount++;
             }
             return result;
         }
@@ -1049,19 +1702,22 @@ namespace MeshPlugin
         // попадать в DXF дважды: ЛИРА-САПР требует, чтобы отрезки на плане не накладывались.
         private List<Point2d[]> DeduplicateSegments(List<Point2d[]> segments)
         {
-            var seen = new HashSet<string>();
+            var ni = new NodeIndex();
+            var seen = new HashSet<long>();
             var result = new List<Point2d[]>();
             foreach (var seg in segments)
             {
-                string key = EdgeKey(seg[0], seg[1]);
-                if (seen.Add(key))
+                int ia = ni.GetNode(seg[0]);
+                int ib = ni.GetNode(seg[1]);
+                if (ia == ib) continue; // концы слились по допуску — отрезка нет
+                if (seen.Add(EdgePairKey(ia, ib)))
                     result.Add(seg);
             }
             return result;
         }
 
 
-        private bool SegmentLiesOnContour(Point2d a, Point2d b, List<Point2d> contour, double eps = 1e-3)
+        private bool SegmentLiesOnContour(Point2d a, Point2d b, List<Point2d> contour, double eps = MeshTol.OnSegment)
         {
             int n = contour.Count;
             for (int i = 0; i < n; i++)
@@ -1113,7 +1769,11 @@ namespace MeshPlugin
             if (nx < -1e-9 || (Math.Abs(nx) <= 1e-9 && ny < 0)) { nx = -nx; ny = -ny; }
             double c = a.X * ny - a.Y * nx;
 
-            string key = nx.ToString("F6") + "|" + ny.ToString("F6") + "|" + c.ToString("F1");
+            // Ключ прямой: направление и её смещение от начала координат, квантованные
+            // целыми. Целые числа не зависят от локали (прежний ToString("F6") на
+            // русской локали давал "0,123456"), а квант сохранён прежним.
+            string key = (long)Math.Round(nx * 1e6) + "|" + (long)Math.Round(ny * 1e6)
+                + "|" + (long)Math.Round(c * 10.0);
 
             CollinearGroup g;
             if (!groups.TryGetValue(key, out g))
@@ -1167,7 +1827,7 @@ namespace MeshPlugin
                 var pts = new List<Point2d>();
                 foreach (var br in g.Breaks)
                 {
-                    if (ts.Count > 0 && br.Key - ts[ts.Count - 1] < 1e-3) continue;
+                    if (ts.Count > 0 && br.Key - ts[ts.Count - 1] < MeshTol.NodeMerge) continue;
                     ts.Add(br.Key);
                     pts.Add(br.Value);
                 }
@@ -1253,8 +1913,8 @@ namespace MeshPlugin
                     var right = CleanupPolygon(ClipPolygonAgainstEdge(piece, w[1], w[0]));
 
                     bool added = false;
-                    if (left.Count >= 3 && Math.Abs(PolygonArea(left)) > 1e-3) { next.Add(left); added = true; }
-                    if (right.Count >= 3 && Math.Abs(PolygonArea(right)) > 1e-3) { next.Add(right); added = true; }
+                    if (left.Count >= 3 && Math.Abs(PolygonArea(left)) > MeshTol.MinArea) { next.Add(left); added = true; }
+                    if (right.Count >= 3 && Math.Abs(PolygonArea(right)) > MeshTol.MinArea) { next.Add(right); added = true; }
                     if (!added) next.Add(piece);
                 }
 

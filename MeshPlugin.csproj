@@ -72,10 +72,15 @@
     <Reference Include="System.Xml" />
   </ItemGroup>
   <ItemGroup>
+    <Compile Include="BuildInfo.cs" />
+    <Compile Include="Check.cs" />
     <Compile Include="Commands.cs" />
+    <Compile Include="Defs.cs" />
     <Compile Include="Geometry.cs" />
     <Compile Include="LiraExport.cs" />
     <Compile Include="QuadMesh.cs" />
+    <Compile Include="Quality.cs" />
+    <Compile Include="SelfCheck.cs" />
     <Compile Include="SpatialGrid.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />
   </ItemGroup>
@@ -85,8 +90,10 @@
   <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
   <!-- Свежая DLL копируется в autoloader-bundle: AutoCAD подхватывает плагин при
        старте сам, без NETLOAD. Если AutoCAD открыт, DLL занята и копирование
-       упадёт — это сигнал закрыть AutoCAD и пересобрать. -->
+       упадёт — сборка обязана упасть вместе с ним и сказать почему: иначе в
+       бандле остаётся ПРЕЖНЯЯ сборка, а тестирование идёт на ней (сообщение
+       латиницей — консоль сборки выводит кириллицу в другой кодировке). -->
   <PropertyGroup>
-    <PostBuildEvent>xcopy /Y "$(TargetPath)" "$(APPDATA)\Autodesk\ApplicationPlugins\MeshPlugin.bundle\Contents\"</PostBuildEvent>
+    <PostBuildEvent>xcopy /Y "$(TargetPath)" "$(APPDATA)\Autodesk\ApplicationPlugins\MeshPlugin.bundle\Contents\" || (echo. &amp;&amp; echo ERROR: cannot copy MeshPlugin.dll into the AutoCAD bundle - the file is locked. Close AutoCAD and rebuild, otherwise AutoCAD will keep running the OLD build. &amp;&amp; exit 1)</PostBuildEvent>
   </PropertyGroup>
 </Project>

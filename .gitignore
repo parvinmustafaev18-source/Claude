@@ -3,3 +3,9 @@ obj/
 .vs/
 packages/
 *.user
+
+# Крупные файлы данных и справочные материалы — в репозиторий не идут
+*.dxf
+*.dwg
+Example14.pdf
+example14.txt
