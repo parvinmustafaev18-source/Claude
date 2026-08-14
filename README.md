@@ -14,11 +14,20 @@
 
 ## Сборка
 
+**Закрыть AutoCAD и запустить `build.bat`** (двойной клик). Скрипт сам найдёт
+MSBuild, соберёт проект и установит плагин; при ошибке скажет, что не так.
+
+Вручную:
+
 ```
 "C:\Program Files\Microsoft Visual Studio\2022\Community\MSBuild\Current\Bin\MSBuild.exe" MeshPlugin.csproj /p:Configuration=Debug /p:Platform=x64
 ```
 
 Результат: `bin\x64\Debug\MeshPlugin.dll`.
+
+Папка AutoCAD определяется автоматически (версии 2019–2026). Если AutoCAD
+установлен в нестандартное место — указать явно:
+`/p:AcadDir="D:\Путь\к\AutoCAD\"` (папка, где лежит `acdbmgd.dll`).
 
 ## Загрузка в AutoCAD
 
