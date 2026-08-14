@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<ApplicationPackage SchemaVersion="1.0" ProductType="Application"
+    Name="MeshPlugin" AppVersion="1.0.0"
+    Description="КЭ-сетка фундаментной плиты и экспорт в ЛИРА-САПР">
+  <CompanyDetails Name="MeshPlugin" />
+  <Components>
+    <RuntimeRequirements OS="Win64" Platform="AutoCAD" SeriesMin="R23.0" />
+    <ComponentEntry AppName="MeshPlugin" ModuleName="./Contents/MeshPlugin.dll"
+        AppDescription="MeshPlugin — сетка КЭ и экспорт в ЛИРА-САПР"
+        LoadOnAutoCADStartup="True" />
+  </Components>
+</ApplicationPackage>

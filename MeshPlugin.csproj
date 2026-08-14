@@ -49,17 +49,38 @@
     <LangVersion>7.3</LangVersion>
     <ErrorReport>prompt</ErrorReport>
   </PropertyGroup>
+  <!-- Папка AutoCAD ищется автоматически: проект должен собираться на любой машине,
+       где стоит AutoCAD любой поддерживаемой версии, без правки этого файла.
+       Переопределить вручную: MSBuild ... /p:AcadDir="D:\Путь\к\AutoCAD\" -->
+  <PropertyGroup>
+    <AcadProgramFiles Condition="'$(AcadProgramFiles)' == ''">C:\Program Files\Autodesk\</AcadProgramFiles>
+  </PropertyGroup>
+  <PropertyGroup Condition="'$(AcadDir)' == ''">
+    <AcadDir Condition="Exists('$(AcadProgramFiles)AutoCAD 2026\acdbmgd.dll')">$(AcadProgramFiles)AutoCAD 2026\</AcadDir>
+    <AcadDir Condition="'$(AcadDir)' == '' And Exists('$(AcadProgramFiles)AutoCAD 2025\acdbmgd.dll')">$(AcadProgramFiles)AutoCAD 2025\</AcadDir>
+    <AcadDir Condition="'$(AcadDir)' == '' And Exists('$(AcadProgramFiles)AutoCAD 2024\acdbmgd.dll')">$(AcadProgramFiles)AutoCAD 2024\</AcadDir>
+    <AcadDir Condition="'$(AcadDir)' == '' And Exists('$(AcadProgramFiles)AutoCAD 2023\acdbmgd.dll')">$(AcadProgramFiles)AutoCAD 2023\</AcadDir>
+    <AcadDir Condition="'$(AcadDir)' == '' And Exists('$(AcadProgramFiles)AutoCAD 2022\acdbmgd.dll')">$(AcadProgramFiles)AutoCAD 2022\</AcadDir>
+    <AcadDir Condition="'$(AcadDir)' == '' And Exists('$(AcadProgramFiles)AutoCAD 2021\acdbmgd.dll')">$(AcadProgramFiles)AutoCAD 2021\</AcadDir>
+    <AcadDir Condition="'$(AcadDir)' == '' And Exists('$(AcadProgramFiles)AutoCAD 2020\acdbmgd.dll')">$(AcadProgramFiles)AutoCAD 2020\</AcadDir>
+    <AcadDir Condition="'$(AcadDir)' == '' And Exists('$(AcadProgramFiles)AutoCAD 2019\acdbmgd.dll')">$(AcadProgramFiles)AutoCAD 2019\</AcadDir>
+  </PropertyGroup>
+  <Target Name="CheckAcadDir" BeforeTargets="ResolveAssemblyReferences">
+    <Error Condition="'$(AcadDir)' == ''"
+           Text="AutoCAD not found under $(AcadProgramFiles). Install AutoCAD, or build with /p:AcadDir=&quot;X:\Path\To\AutoCAD\&quot; (folder containing acdbmgd.dll)." />
+    <Message Importance="high" Text="AutoCAD libraries: $(AcadDir)" />
+  </Target>
   <ItemGroup>
     <Reference Include="accoremgd">
-      <HintPath>C:\Program Files\Autodesk\AutoCAD 2019\accoremgd.dll</HintPath>
+      <HintPath>$(AcadDir)accoremgd.dll</HintPath>
       <Private>False</Private>
     </Reference>
     <Reference Include="acdbmgd">
-      <HintPath>C:\Program Files\Autodesk\AutoCAD 2019\acdbmgd.dll</HintPath>
+      <HintPath>$(AcadDir)acdbmgd.dll</HintPath>
       <Private>False</Private>
     </Reference>
     <Reference Include="acmgd">
-      <HintPath>C:\Program Files\Autodesk\AutoCAD 2019\acmgd.dll</HintPath>
+      <HintPath>$(AcadDir)acmgd.dll</HintPath>
       <Private>False</Private>
     </Reference>
     <Reference Include="System" />
@@ -89,11 +110,18 @@
   </ItemGroup>
   <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
   <!-- Свежая DLL копируется в autoloader-bundle: AutoCAD подхватывает плагин при
-       старте сам, без NETLOAD. Если AutoCAD открыт, DLL занята и копирование
-       упадёт — сборка обязана упасть вместе с ним и сказать почему: иначе в
-       бандле остаётся ПРЕЖНЯЯ сборка, а тестирование идёт на ней (сообщение
-       латиницей — консоль сборки выводит кириллицу в другой кодировке). -->
+       старте сам, без NETLOAD. Бандл собирается ЦЕЛИКОМ (манифест из bundle\ +
+       DLL), поэтому на новой машине после git clone ничего настраивать руками не
+       нужно. Если AutoCAD открыт, DLL занята и копирование упадёт — сборка обязана
+       упасть вместе с ним и сказать почему: иначе в бандле остаётся ПРЕЖНЯЯ сборка,
+       а тестирование идёт на ней (сообщение латиницей — консоль сборки выводит
+       кириллицу в другой кодировке). -->
   <PropertyGroup>
-    <PostBuildEvent>xcopy /Y "$(TargetPath)" "$(APPDATA)\Autodesk\ApplicationPlugins\MeshPlugin.bundle\Contents\" || (echo. &amp;&amp; echo ERROR: cannot copy MeshPlugin.dll into the AutoCAD bundle - the file is locked. Close AutoCAD and rebuild, otherwise AutoCAD will keep running the OLD build. &amp;&amp; exit 1)</PostBuildEvent>
+    <BundleDir>$(APPDATA)\Autodesk\ApplicationPlugins\MeshPlugin.bundle</BundleDir>
+  </PropertyGroup>
+  <PropertyGroup>
+    <PostBuildEvent>if not exist "$(BundleDir)\Contents\" mkdir "$(BundleDir)\Contents"
+xcopy /Y "$(ProjectDir)bundle\PackageContents.xml" "$(BundleDir)\"
+xcopy /Y "$(TargetPath)" "$(BundleDir)\Contents\" || (echo. &amp;&amp; echo ERROR: cannot copy MeshPlugin.dll into the AutoCAD bundle - the file is locked. Close AutoCAD and rebuild, otherwise AutoCAD will keep running the OLD build. &amp;&amp; exit 1)</PostBuildEvent>
   </PropertyGroup>
 </Project>
