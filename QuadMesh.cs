@@ -782,6 +782,28 @@ namespace MeshPlugin
                         ed.WriteMessage($"ВНИМАНИЕ: часть узлов контура пилонов не связана с сеткой плиты — отмечены кругами в слое {ProblemLayerName}. Обычная причина: грань пилона прошла в паре миллиметров от линии сетки и полосу схлопнула сварка коротких рёбер.\n");
                 }
 
+                // ЖЁСТКОЕ ПРАВИЛО: линии сетки не пересекаются без узла. Пересечение
+                // без общего узла в ЛИРЕ не связывает элементы (планарный граф строится
+                // по узлам), а в чертеже выглядит как крест посреди элемента. Источники
+                // такие пересечения имеют разные (замыкания открытых узлов, наклонные
+                // после подрезки), поэтому правило проверяется здесь, на итоговой сетке,
+                // а не в каждом этапе по отдельности.
+                int crossingsTotal = 0, crossingsLeft = 0;
+                for (int pass = 0; pass < 3; pass++)
+                {
+                    innerSegments = SplitSegmentsAtIntersections(innerSegments, out crossingsLeft);
+                    if (crossingsLeft == 0) break;
+
+                    crossingsTotal += crossingsLeft;
+                    // Точка пересечения стала узлом — она может лежать и на третьем ребре.
+                    innerSegments = SplitSegmentsAtNodes(innerSegments, cellSize, out _);
+                    innerSegments = DeduplicateSegments(innerSegments);
+                }
+                if (crossingsTotal > 0)
+                    ed.WriteMessage($"\nПересечений линий без узла: {crossingsTotal} — в каждое врезан узел.\n");
+                if (crossingsLeft > 0)
+                    ed.WriteMessage($"ВНИМАНИЕ: пересечений без узла осталось: {crossingsLeft} — сообщите об этом, это ошибка плагина.\n");
+
                 // Постусловия: то, что конвейер обязан был обеспечить своими этапами,
                 // проверяется числом, а не на глаз по чертежу (см. SelfCheck.cs).
                 RunMeshSelfCheck(ed, innerSegments, contourPts, voidPolys);
@@ -1378,6 +1400,14 @@ namespace MeshPlugin
                     if (crosses) continue;
 
                     foreach (var s in segments)
+                        if (SegmentsIntersect(nodes[i], nodes[j], s[0], s[1])) { crosses = true; break; }
+                    if (crosses) continue;
+
+                    // И с замыканиями, добавленными в этом же проходе. Проверки против
+                    // одного лишь segments недостаточно: две наклонные, каждая из
+                    // которых не пересекала исходную сетку, спокойно пересекались друг
+                    // с другом — крест без узла посреди элемента.
+                    foreach (var s in newSegs)
                         if (SegmentsIntersect(nodes[i], nodes[j], s[0], s[1])) { crosses = true; break; }
                     if (crosses) continue;
 
