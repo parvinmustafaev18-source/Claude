@@ -9,3 +9,9 @@ packages/
 *.dwg
 Example14.pdf
 example14.txt
+
+# Локальные настройки прав Claude Code — машинные, на другие компьютеры не едут
+.claude/settings.local.json
+
+# Посторонний проект, лежит в этой папке случайно — в репозиторий не идёт
+audi-legend/
