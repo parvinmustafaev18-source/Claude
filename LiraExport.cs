@@ -62,6 +62,30 @@ namespace MeshPlugin
             }
             double thicknessM = thicknessMm / 1000.0;
 
+            // Тело пилона: элементы плиты внутри контура MESH_PYLONS получают ОТДЕЛЬНУЮ
+            // жёсткость, чтобы их можно было сделать жёсткой вставкой. Множитель
+            // спрашивается только когда такие контуры в чертеже есть, и по умолчанию
+            // равен 1 — тогда параметры совпадают с плитой, отличается только номер
+            // (ЛИРА принимает одинаковые жёсткости под разными номерами).
+            int pylonRectCount = 0;
+            using (Transaction trPeek = db.TransactionManager.StartTransaction())
+            {
+                pylonRectCount = GetPylonOutlines(trPeek, db, out _, out _).Count;
+            }
+
+            double pylonStiffFactor = 1.0;
+            if (pylonRectCount > 0)
+            {
+                PromptDoubleOptions pdoPk = new PromptDoubleOptions(
+                    $"\nКонтуров пилонов: {pylonRectCount}. Множитель жёсткости тела пилона (E тела = E × k; 1 = как у плиты): ");
+                pdoPk.DefaultValue = 1.0;
+                pdoPk.AllowNegative = false;
+                pdoPk.AllowZero = false;
+                PromptDoubleResult pdrPk = ed.GetDouble(pdoPk);
+                if (pdrPk.Status != PromptStatus.OK) return;
+                pylonStiffFactor = pdrPk.Value;
+            }
+
             // Модуль упругости — выбором класса бетона (начальный модуль Eb по
             // СП 63.13330 в пересчёте на т/м²); Manual — ввод числа напрямую.
             double elasticModulus;
@@ -299,6 +323,12 @@ namespace MeshPlugin
 
                 ed.WriteMessage($"\n[диагностика отверстий] объектов на слое {HoleLayerName}: {holeEntCount}; из них замкнутых контуров принято: {holePolys.Count}, незамкнутых полилиний: {holeOpenPolyCount}\n");
 
+                // Контуры тел пилонов. В планарный граф они НЕ добавляются: их грани уже
+                // лежат в сетке (MESHQUADMESH отпечатывает контур), а лишние рёбра дали
+                // бы наложение. Нужны только для того, чтобы отличить элементы плиты,
+                // попавшие в тело пилона, и дать им свою жёсткость.
+                var pylonRects = GetPylonOutlines(tr, db, out _, out _);
+
                 segments = DeduplicateSegments(segments);
 
                 // Косяки дверных проёмов: стену режем ровно в концах дверного отрезка.
@@ -350,6 +380,9 @@ namespace MeshPlugin
                 var wallStiffIds = new Dictionary<string, int>();
                 var wallStiffThk = new Dictionary<int, double>();   // № жёсткости -> толщина, мм
                 var wallStiffTitle = new Dictionary<int, string>(); // № жёсткости -> расшифровка
+                // Переопределение модуля упругости для отдельных номеров (тело пилона).
+                // Для остальных берётся общий elasticModulus.
+                var wallStiffE = new Dictionary<int, double>();
                 var colStiffIds = new Dictionary<string, int>();
                 var colStiffDims = new List<double[]>();
                 int nextStiff = 2;
@@ -495,6 +528,42 @@ namespace MeshPlugin
                         foreach (var hp in holePolys)
                             if (IsPointInPolygon(lostFacePts[i], hp)) { inHole = true; break; }
                         if (inHole) { lostFacePts.RemoveAt(i); lostFaceCenters.RemoveAt(i); }
+                    }
+                }
+
+                // ТЕЛО ПИЛОНА — отдельная жёсткость. Признак тот же, что у отверстий:
+                // ЦЕНТР готового элемента внутри контура пилона. Центр треугольника или
+                // выпуклого четырёхугольника всегда строго внутри него, поэтому тест не
+                // срывается ни на какой форме элемента, а узлы сетки сидят ровно на грани
+                // пилона (это обеспечивает отпечаток в MESHQUADMESH).
+                // Считается ДО добавления стен: в elements сейчас только пластины плиты.
+                int pylonBodyElems = 0, pylonBodyStiffId = 0;
+                if (pylonRects.Count > 0)
+                {
+                    foreach (var el in elements)
+                    {
+                        double cx = 0, cy = 0;
+                        int vcount = el.Length - 2;
+                        for (int k = 2; k < el.Length; k++) { cx += nodes3[el[k]][0]; cy += nodes3[el[k]][1]; }
+                        Point2d ec = new Point2d(cx / vcount, cy / vcount);
+
+                        bool inPylon = false;
+                        foreach (var pr in pylonRects)
+                            if (IsPointInPolygon(ec, pr)) { inPylon = true; break; }
+                        if (!inPylon) continue;
+
+                        if (pylonBodyStiffId == 0)
+                        {
+                            pylonBodyStiffId = nextStiff++;
+                            wallStiffThk[pylonBodyStiffId] = thicknessMm;
+                            wallStiffE[pylonBodyStiffId] = elasticModulus * pylonStiffFactor;
+                            wallStiffTitle[pylonBodyStiffId] = $"тело пилона (плита H-{thicknessMm:0.#}"
+                                + (Math.Abs(pylonStiffFactor - 1.0) > 1e-9 ? $", E×{pylonStiffFactor:0.###}" : ", E как у плиты")
+                                + ")";
+                        }
+
+                        el[1] = pylonBodyStiffId;
+                        pylonBodyElems++;
                     }
                 }
 
@@ -664,7 +733,9 @@ namespace MeshPlugin
                 wallStiffOrdered.Sort();
                 foreach (int sid in wallStiffOrdered)
                 {
-                    sb.AppendLine(sid + " GEI " + elasticModulus.ToString("0.###e+000", inv) + " 0.2 "
+                    double eSid;
+                    if (!wallStiffE.TryGetValue(sid, out eSid)) eSid = elasticModulus;
+                    sb.AppendLine(sid + " GEI " + eSid.ToString("0.###e+000", inv) + " 0.2 "
                         + (wallStiffThk[sid] / 1000.0).ToString("0.###", inv) + " " + roStr + " /");
                 }
                 foreach (var cd in colStiffDims)
@@ -712,7 +783,8 @@ namespace MeshPlugin
 
                 ed.WriteMessage($"\nЭкспортировано: узлов {nodes3.Count}; плита: КЭ 41 {rectCount}, КЭ 44 {quadCount}, КЭ 42 {triCount} (вееров под пилонами: {fanFaces}); стены: КЭ 44 {wallElemCount} (толщин: {wallStiffIds.Count}); пилоны: стержней КЭ 10 {barCount} (сечений: {colStiffIds.Count})" +
                     $"; осей пилонов (PILON) в чертеже: {wallOrigIsPylon.FindAll(p => p).Count}" +
-                    (holePolys.Count > 0 ? $"; отверстий: {holePolys.Count} (удалено элементов внутри: {holeElemsRemoved})" : "") +
+                    (holePolys.Count > 0 ? $"; отверстий: {holePolys.Count} (удалено элементов внутри: {holeElemsRemoved})" : "")
+                    + (pylonRects.Count > 0 ? $"; тела пилонов: контуров {pylonRects.Count}, элементов плиты в них {pylonBodyElems}" + (pylonBodyStiffId > 0 ? $" (жёсткость №{pylonBodyStiffId})" : "") : "") +
                     (doorOrig.Count > 0 ? $"; дверных проёмов: {doorOrig.Count} (врезано узлов на косяках: {doorJambSplits}, кусков стены под дверью: {doorPiers}, пропущено рядов КЭ 44: {doorRowsSkipped})" : "") +
                     (failedFaces > 0 ? $"; потеряно граней: {failedFaces}" : "") +
                     (columnsWithoutDims > 0 ? $"; пилонов без размеров в имени слоя (принято 400x400): {columnsWithoutDims}" : "") + "\n");
