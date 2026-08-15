@@ -237,22 +237,41 @@ namespace MeshPlugin
                 // разреза ячеек (splitConstraints) — режет ячейки и даёт узел в центре
                 // поперёк оси, но НЕ попадает в cutSegments, чтобы ResolveOverlappingSegments
                 // не удалил это поперечное ребро как совпавшее со «стеной».
+                // У пилона с отпечатком крест не нужен: узел в центре даёт сама мелкая
+                // сетка (её линии проходят и по оси, и поперёк неё), а лишний разрез
+                // режет ячейку по бесконечной прямой и плодит косые рёбра вокруг пилона.
                 var pylonCrosses = GetPylonCrossConstraints(tr, db);
                 var splitConstraints = new List<Point2d[]>(cutSegments);
-                splitConstraints.AddRange(pylonCrosses);
-                if (pylonCrosses.Count > 0)
-                    ed.WriteMessage($"\nПоперечных осей пилонов врезано через центр: {pylonCrosses.Count}\n");
+                int crossesKept = 0, crossesDropped = 0;
+                foreach (var c in pylonCrosses)
+                {
+                    Point2d cmid = new Point2d((c[0].X + c[1].X) / 2.0, (c[0].Y + c[1].Y) / 2.0);
+                    if (PointInOrOnAnyPolygon(cmid, pylonRects)) { crossesDropped++; continue; }
+                    splitConstraints.Add(c);
+                    crossesKept++;
+                }
+                if (crossesKept > 0)
+                    ed.WriteMessage($"\nПоперечных осей пилонов врезано через центр: {crossesKept}\n");
+                if (crossesDropped > 0)
+                    ed.WriteMessage($"\nПоперечных осей не потребовалось (узел в центре даёт отпечаток): {crossesDropped}\n");
 
-                // Стороны отпечатка режут ячейки и становятся рёбрами сетки. Только
-                // splitConstraints, НЕ cutSegments: в cutSegments они были бы «стеной»,
-                // и ResolveOverlappingSegments снял бы сам отпечаток как совпавший со
-                // стеной — ровно та ошибка, что была с поперечной осью пилона.
+                // Стороны отпечатка НЕ идут ни в cutSegments, ни в splitConstraints.
+                // В cutSegments они были бы «стеной», и ResolveOverlappingSegments снял
+                // бы сам отпечаток. В splitConstraints — резали бы ячейку по БЕСКОНЕЧНОЙ
+                // прямой (SplitPolygonByWalls режет полуплоскостями), то есть далеко за
+                // пределами пилона: отсюда и брались длинные косые рёбра вокруг него.
+                // Ячейку, задетую отпечатком, режет прямоугольная разность ниже.
+                // Здесь стороны нужны только как запрет на слияние треугольников через
+                // грань пилона.
+                var pylonEdges = new List<Point2d[]>();
                 foreach (var r in pylonRects)
                 {
                     int rn = r.Count;
                     for (int i = 0; i < rn; i++)
-                        splitConstraints.Add(new Point2d[] { r[i], r[(i + 1) % rn] });
+                        pylonEdges.Add(new Point2d[] { r[i], r[(i + 1) % rn] });
                 }
+                var mergeBlockers = new List<Point2d[]>(splitConstraints);
+                mergeBlockers.AddRange(pylonEdges);
 
                 // Косяки дверных проёмов: первый проход собирает только их координаты —
                 // они идут «мягкими» целями в BuildGridCoords. Сами поперечные
@@ -359,6 +378,24 @@ namespace MeshPlugin
                         if (CellInsideAnyColumn(cell, columnPolys))
                         {
                             continue; // внутри пилона-стержня (COLUMNS) сетки плиты нет
+                        }
+
+                        if (pylonRects.Count > 0 && !CellInsideAnyRect(cell, pylonRects)
+                            && CellOverlapsAnyRect(cell, pylonRects))
+                        {
+                            // Ячейка задета отпечатком с краю. Режем её ПРЯМОУГОЛЬНОЙ
+                            // РАЗНОСТЬЮ, а не полуплоскостями по граням: полуплоскость
+                            // продолжает грань пилона через всю ячейку и дальше, из-за
+                            // чего вокруг пилона появлялись длинные косые рёбра и вееры
+                            // треугольников. Разность даёт до четырёх прямоугольников,
+                            // каждый из которых идёт по обычному пути классификации.
+                            foreach (var sub in SubtractRects(cell, pylonRects))
+                            {
+                                if (CellTouchesWalls(sub, splitConstraints)) wallCells.Add(sub);
+                                else if (IsCellFullyInside(sub, contourPts)) quadCells.Add(sub);
+                                else boundaryCells.Add(sub);
+                            }
+                            continue;
                         }
 
                         if (CellInsideAnyRect(cell, pylonRects))
@@ -583,7 +620,7 @@ namespace MeshPlugin
                             (edgeStart[side].X + edgeEnd[side].X) / 2.0,
                             (edgeStart[side].Y + edgeEnd[side].Y) / 2.0);
                         bool onWall = false;
-                        foreach (var w in splitConstraints)
+                        foreach (var w in mergeBlockers)
                             if (IsPointOnSegment(edgeMid, w[0], w[1], MeshTol.OnSegment)) { onWall = true; break; }
                         if (onWall) continue;
 
@@ -729,6 +766,22 @@ namespace MeshPlugin
                         ed.WriteMessage($"\nУзлов сетки врезано на косяках дверных проёмов: {doorSplits}\n");
                 }
 
+                // ЖЁСТКОЕ ПРАВИЛО: все узлы контура пилона входят в сетку плиты. Сначала
+                // врезка (ребро, прошедшее через узел насквозь, режется в нём), затем
+                // проверка постусловия — то, что осталось непривязанным, идёт в круги
+                // ПРОБЛЕМА, а не замалчивается.
+                var pylonNodes = CollectPylonOutlineNodes(pylonRects);
+                var unlinkedPylonNodes = new List<Point2d>();
+                if (pylonNodes.Count > 0)
+                {
+                    innerSegments = SplitSegmentsAtPylonNodes(innerSegments, pylonNodes, cellSize, out int pylonNodeSplits);
+                    unlinkedPylonNodes = FindUnlinkedPylonNodes(innerSegments, pylonNodes, cellSize);
+
+                    ed.WriteMessage($"\nУзлы контуров пилонов: всего {pylonNodes.Count}, врезано в проходящие рёбра: {pylonNodeSplits}, не вошло в сетку: {unlinkedPylonNodes.Count}\n");
+                    if (unlinkedPylonNodes.Count > 0)
+                        ed.WriteMessage($"ВНИМАНИЕ: часть узлов контура пилонов не связана с сеткой плиты — отмечены кругами в слое {ProblemLayerName}. Обычная причина: грань пилона прошла в паре миллиметров от линии сетки и полосу схлопнула сварка коротких рёбер.\n");
+                }
+
                 // Постусловия: то, что конвейер обязан был обеспечить своими этапами,
                 // проверяется числом, а не на глаз по чертежу (см. SelfCheck.cs).
                 RunMeshSelfCheck(ed, innerSegments, contourPts, voidPolys);
@@ -754,10 +807,13 @@ namespace MeshPlugin
                     if (!PointInsideAnyVoid(p, voidPolys)) problemPts.Add(p);
                 foreach (var p in unclosedNodes)
                     if (!PointInsideAnyVoid(p, voidPolys)) problemPts.Add(p);
+                // Узлы контура пилона отмечаются без фильтра по пустотам: они лежат на
+                // грани отпечатка, а отпечаток — не пустота.
+                problemPts.AddRange(unlinkedPylonNodes);
                 if (problemPts.Count > 0)
                 {
                     DrawMarkCircles(tr, db, ProblemLayerName, problemPts, ProblemMarkRadius);
-                    ed.WriteMessage($"\nВНИМАНИЕ: проблемных мест сетки: {problemPts.Count} (не разбитых полигонов: {failedPolygonPts.Count}, незамкнутых узлов: {unclosedNodes.Count}) — отмечены кругами в слое {ProblemLayerName}. Поправьте расположение объектов в этих местах и перестройте сетку.\n");
+                    ed.WriteMessage($"\nВНИМАНИЕ: проблемных мест сетки: {problemPts.Count} (не разбитых полигонов: {failedPolygonPts.Count}, незамкнутых узлов: {unclosedNodes.Count}, узлов контура пилонов вне сетки: {unlinkedPylonNodes.Count}) — отмечены кругами в слое {ProblemLayerName}. Поправьте расположение объектов в этих местах и перестройте сетку.\n");
                 }
 
                 tr.Commit();
@@ -1535,6 +1591,123 @@ namespace MeshPlugin
             return result;
         }
 
+        // Узлы контура пилона: углы плюс точки мелкой сетки на его гранях. Ровно этими
+        // точками отпечаток обязан войти в сетку плиты.
+        private List<Point2d> CollectPylonOutlineNodes(List<List<Point2d>> rects)
+        {
+            var pts = new List<Point2d>();
+            foreach (var r in rects)
+            {
+                double[] b = PolyBbox(r);
+                var fx = BuildPylonInnerCoords(b[0], b[2]);
+                var fy = BuildPylonInnerCoords(b[1], b[3]);
+
+                foreach (var x in fx)
+                {
+                    pts.Add(new Point2d(x, b[1]));
+                    pts.Add(new Point2d(x, b[3]));
+                }
+                foreach (var y in fy)
+                {
+                    pts.Add(new Point2d(b[0], y));
+                    pts.Add(new Point2d(b[2], y));
+                }
+            }
+            return pts;
+        }
+
+        // ЖЁСТКОЕ ПРАВИЛО: каждый узел контура пилона обязан быть узлом сетки плиты.
+        // Ребро, проходящее через такой узел насквозь, режется в нём надвое — узел
+        // перестаёт быть «висячим» посреди чужого элемента и связывается с плитой.
+        // Это тот же приём, что для косяков дверей, но с поиском кандидатов через
+        // пространственную сетку: узлов контура на плане тысячи, и перебор всех пар
+        // «отрезок × точка» стоил бы десятки миллионов проверок.
+        private List<Point2d[]> SplitSegmentsAtPylonNodes(
+            List<Point2d[]> segments,
+            List<Point2d> pts,
+            double cellSize,
+            out int splitCount)
+        {
+            splitCount = 0;
+            if (pts == null || pts.Count == 0) return segments;
+
+            var grid = new SpatialGrid(Math.Max(cellSize, 1.0));
+            for (int i = 0; i < pts.Count; i++)
+                grid.Add(i, pts[i]);
+
+            var result = new List<Point2d[]>();
+
+            foreach (var seg in segments)
+            {
+                Point2d a = seg[0], b = seg[1];
+                double dx = b.X - a.X, dy = b.Y - a.Y;
+                double lenSq = dx * dx + dy * dy;
+                if (lenSq < MeshTol.ZeroSq) continue;
+                double segLen = Math.Sqrt(lenSq);
+
+                var cuts = new List<KeyValuePair<double, Point2d>>();
+                foreach (int pi in grid.QueryRadius(a, segLen))
+                {
+                    Point2d p = pts[pi];
+                    if (p.GetDistanceTo(a) < MeshTol.NodeMerge || p.GetDistanceTo(b) < MeshTol.NodeMerge) continue;
+                    if (!IsPointOnSegment(p, a, b, MeshTol.OnSegment)) continue;
+
+                    double t = ((p.X - a.X) * dx + (p.Y - a.Y) * dy) / lenSq;
+                    if (t > 1e-6 && t < 1.0 - 1e-6)
+                        cuts.Add(new KeyValuePair<double, Point2d>(t, p));
+                }
+
+                if (cuts.Count == 0) { result.Add(seg); continue; }
+
+                cuts.Sort((p, q) => p.Key.CompareTo(q.Key));
+                Point2d prev = a;
+                foreach (var cut in cuts)
+                {
+                    if (prev.GetDistanceTo(cut.Value) < MeshTol.NodeMerge) continue;
+                    result.Add(new Point2d[] { prev, cut.Value });
+                    prev = cut.Value;
+                    splitCount++;
+                }
+                if (prev.GetDistanceTo(b) > MeshTol.NodeMerge)
+                    result.Add(new Point2d[] { prev, b });
+            }
+
+            return result;
+        }
+
+        // Постусловие того же правила, проверяется после ВСЕХ обрезок: из узла контура
+        // пилона обязано выходить не меньше двух рёбер сетки. Ноль — узел в сетку не
+        // вошёл вовсе, один — вошёл тупиковым концом. Функция ничего не чинит: молчаливое
+        // исправление скрыло бы сбой этапа, а место нарушения важнее самого нарушения.
+        private List<Point2d> FindUnlinkedPylonNodes(
+            List<Point2d[]> segments,
+            List<Point2d> pts,
+            double cellSize)
+        {
+            var bad = new List<Point2d>();
+            if (pts == null || pts.Count == 0) return bad;
+
+            var endpoints = new List<Point2d>();
+            var grid = new SpatialGrid(Math.Max(cellSize, 1.0));
+            foreach (var seg in segments)
+            {
+                grid.Add(endpoints.Count, seg[0]); endpoints.Add(seg[0]);
+                grid.Add(endpoints.Count, seg[1]); endpoints.Add(seg[1]);
+            }
+
+            foreach (var p in pts)
+            {
+                int incident = 0;
+                foreach (int ei in grid.QueryRadius(p, MeshTol.MinElementSize))
+                {
+                    if (endpoints[ei].GetDistanceTo(p) < MeshTol.NodeMerge) incident++;
+                    if (incident >= 2) break;
+                }
+                if (incident < 2) bad.Add(p);
+            }
+            return bad;
+        }
+
         // Каждый угол пилона должен быть связан с сеткой минимум двумя отрезками
         // (полудиагональ к центру + связь наружу). Свободных углов не допускается.
         private List<Point2d[]> EnsureColumnCornerLinks(
@@ -1687,6 +1860,81 @@ namespace MeshPlugin
                     && cminY >= rminY - tol && cmaxY <= rmaxY + tol) return true;
             }
             return false;
+        }
+
+        private static double[] PolyBbox(IList<Point2d> pts)
+        {
+            double x0 = double.MaxValue, y0 = double.MaxValue;
+            double x1 = double.MinValue, y1 = double.MinValue;
+            foreach (var p in pts)
+            {
+                if (p.X < x0) x0 = p.X;
+                if (p.X > x1) x1 = p.X;
+                if (p.Y < y0) y0 = p.Y;
+                if (p.Y > y1) y1 = p.Y;
+            }
+            return new double[] { x0, y0, x1, y1 };
+        }
+
+        // Ячейка и отпечаток перекрываются по площади (касание стороной не в счёт).
+        private bool CellOverlapsAnyRect(Point2d[] cell, List<List<Point2d>> rects)
+        {
+            double tol = MeshTol.OnSegment;
+            double[] c = PolyBbox(cell);
+            foreach (var r in rects)
+            {
+                double[] b = PolyBbox(r);
+                if (Math.Min(c[2], b[2]) - Math.Max(c[0], b[0]) > tol
+                    && Math.Min(c[3], b[3]) - Math.Max(c[1], b[1]) > tol) return true;
+            }
+            return false;
+        }
+
+        // Ячейка минус отпечатки пилонов. И ячейка, и отпечатки осевыровнены, поэтому
+        // разность — снова прямоугольники (до четырёх на каждое вычитание): полоса под
+        // отпечатком, над ним, слева и справа от него. Никаких косых рёбер и вееров,
+        // в отличие от разреза полуплоскостями по граням.
+        //
+        // Слишком узкая полоса (грань пилона прошла в паре миллиметров от линии сетки)
+        // намеренно НЕ выбрасывается — дыра в плите хуже. Её схлопнет WeldShortNodes:
+        // подвижный узел полосы ближе 100 мм к неподвижной грани отпечатка притянется
+        // к ней, и полоса исчезнет вместе с вырожденными рёбрами.
+        private List<Point2d[]> SubtractRects(Point2d[] cell, List<List<Point2d>> rects)
+        {
+            double tol = MeshTol.OnSegment;
+            var work = new List<double[]> { PolyBbox(cell) };
+
+            foreach (var r in rects)
+            {
+                double[] b = PolyBbox(r);
+                var next = new List<double[]>();
+
+                foreach (var a in work)
+                {
+                    double ox0 = Math.Max(a[0], b[0]), ox1 = Math.Min(a[2], b[2]);
+                    double oy0 = Math.Max(a[1], b[1]), oy1 = Math.Min(a[3], b[3]);
+
+                    if (ox1 - ox0 <= tol || oy1 - oy0 <= tol) { next.Add(a); continue; }
+
+                    if (oy0 - a[1] > tol) next.Add(new double[] { a[0], a[1], a[2], oy0 });
+                    if (a[3] - oy1 > tol) next.Add(new double[] { a[0], oy1, a[2], a[3] });
+                    if (ox0 - a[0] > tol) next.Add(new double[] { a[0], oy0, ox0, oy1 });
+                    if (a[2] - ox1 > tol) next.Add(new double[] { ox1, oy0, a[2], oy1 });
+                }
+
+                work = next;
+            }
+
+            var result = new List<Point2d[]>();
+            foreach (var a in work)
+            {
+                result.Add(new Point2d[]
+                {
+                    new Point2d(a[0], a[1]), new Point2d(a[2], a[1]),
+                    new Point2d(a[2], a[3]), new Point2d(a[0], a[3])
+                });
+            }
+            return result;
         }
 
         // Координаты мелкой сетки внутри отпечатка по одной оси. Каждая половина (от
