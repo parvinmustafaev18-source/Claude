@@ -46,6 +46,14 @@ namespace MeshPlugin
         // Минимальная сторона конечного элемента. Рёбра короче схлопываются.
         public const double MinElementSize = 100.0;
 
+        // Шаг мелкой сетки внутри отпечатка пилона. Размеры пилонов почти всегда
+        // кратны 100, но правило не в кратности: каждая половина стороны (от грани
+        // до оси) делится на floor(половина/100) равных частей, поэтому грани и ось
+        // всегда остаются линиями сетки, а элемент получается 100–199 мм. Если
+        // половина меньше 100 (пилон тоньше 200 мм), деления нет — элемент выходит
+        // тоньше MinElementSize, это неизбежная плата за отпечаток тонкого пилона.
+        public const double PylonInnerCell = 100.0;
+
         // Насколько разрешено двигать стены и пилоны к линиям сетки.
         public const double WallSnap = 100.0;
 
@@ -114,6 +122,12 @@ namespace MeshPlugin
 
         // Контуры отверстий/проёмов в плите: внутри сетки нет.
         private const string HoleLayerName = "MESH_HOLES";
+
+        // Контуры пилонов-пластин, сохранённые MESHCOLUMNCROSS. Сам пилон остаётся
+        // осью-линией в WALLS(H-... PILON), а контур нужен MESHQUADMESH, чтобы
+        // отпечатать его на сетке плиты (узлы в углах, мелкая сетка внутри).
+        // В отличие от COLUMNS это НЕ пустота: внутри отпечатка сетка плиты есть.
+        private const string PylonOutlineLayerName = "MESH_PYLONS";
 
         // Обозначение дверного проёма (квадрат в середине проёма) — только для
         // чертежа. Слой обязан быть отдельным от WALL_DOORS(H-...): экспорт читает
@@ -190,6 +204,7 @@ namespace MeshPlugin
                 || layer == DoorMarkLayerName
                 || layer == TriangulationLayerName
                 || layer == HoleLayerName
+                || layer == PylonOutlineLayerName
                 || IsColumnLayer(layer);
         }
 

@@ -184,6 +184,35 @@ namespace MeshPlugin
                     return;
                 }
 
+                // Отпечаток контура пилона-пластины (слой MESH_PYLONS). В отличие от
+                // COLUMNS это НЕ пустота: сетка плиты внутри есть, только мелкая. От
+                // контура требуется одно — стать линиями сетки, чтобы углы пилона были
+                // узлами, а не висели посреди элемента.
+                var pylonRects = GetPylonOutlines(tr, db, out int rectsFromAxes, out int rectsNotRect);
+
+                // Тот же жёсткий запрет, что для стен, пилонов и отверстий.
+                var outsideRects = new List<string>();
+                var outsideRectPts = new List<Point2d>();
+                foreach (var r in pylonRects)
+                {
+                    if (IsPolygonInsideContour(r, contourPts)) continue;
+                    var rc = PolygonCentroid(r);
+                    outsideRects.Add($"({rc.X:0}, {rc.Y:0})");
+                    outsideRectPts.Add(rc);
+                }
+                if (outsideRects.Count > 0)
+                {
+                    ed.WriteMessage($"\nОшибка: контуры пилонов выходят за контур фундаментной плиты ({outsideRects.Count} шт.), центры: {string.Join(", ", outsideRects)}. Пилон обязан целиком лежать в пределах плиты. Команда остановлена, чертёж не изменён. Проблемные места отмечены кругами в слое {ProblemLayerName}.\n");
+                    tr.Abort();
+                    MarkProblemPoints(db, outsideRectPts);
+                    return;
+                }
+
+                if (pylonRects.Count > 0)
+                    ed.WriteMessage($"\nКонтуров пилонов для отпечатка: {pylonRects.Count}" +
+                        (rectsFromAxes > 0 ? $" (восстановлено по осям, без контура на {PylonOutlineLayerName}: {rectsFromAxes})" : "") +
+                        (rectsNotRect > 0 ? $", пропущено повёрнутых/непрямоугольных: {rectsNotRect}" : "") + "\n");
+
                 var cutSegments = new List<Point2d[]>(wallSegments);
                 foreach (var col in columnPolys)
                 {
@@ -214,6 +243,17 @@ namespace MeshPlugin
                 if (pylonCrosses.Count > 0)
                     ed.WriteMessage($"\nПоперечных осей пилонов врезано через центр: {pylonCrosses.Count}\n");
 
+                // Стороны отпечатка режут ячейки и становятся рёбрами сетки. Только
+                // splitConstraints, НЕ cutSegments: в cutSegments они были бы «стеной»,
+                // и ResolveOverlappingSegments снял бы сам отпечаток как совпавший со
+                // стеной — ровно та ошибка, что была с поперечной осью пилона.
+                foreach (var r in pylonRects)
+                {
+                    int rn = r.Count;
+                    for (int i = 0; i < rn; i++)
+                        splitConstraints.Add(new Point2d[] { r[i], r[(i + 1) % rn] });
+                }
+
                 // Косяки дверных проёмов: первый проход собирает только их координаты —
                 // они идут «мягкими» целями в BuildGridCoords. Сами поперечные
                 // ограничения строятся ниже, ПОСЛЕ снапа дверей к готовой сетке, иначе
@@ -233,6 +273,19 @@ namespace MeshPlugin
                 foreach (var col in columnPolys)
                 {
                     foreach (var p in col)
+                    {
+                        colXs.Add(p.X);
+                        colYs.Add(p.Y);
+                    }
+                }
+
+                // Грани отпечатка — мягкие цели: если линия сетки рядом, она садится
+                // ровно на грань пилона, и полосы-огрызки между гранью и линией не
+                // остаётся. Жёсткой целью не делаем — вставлять ради каждого пилона
+                // линию через весь план накладно (на плане их бывает под сотню).
+                foreach (var r in pylonRects)
+                {
+                    foreach (var p in r)
                     {
                         colXs.Add(p.X);
                         colYs.Add(p.Y);
@@ -305,7 +358,20 @@ namespace MeshPlugin
 
                         if (CellInsideAnyColumn(cell, columnPolys))
                         {
-                            continue; // внутри пилона сетка плиты не нужна — там своя, 100 мм
+                            continue; // внутри пилона-стержня (COLUMNS) сетки плиты нет
+                        }
+
+                        if (CellInsideAnyRect(cell, pylonRects))
+                        {
+                            // Ячейка целиком накрыта отпечатком пилона — её место
+                            // займут мелкие ячейки, построенные ниже по граням пилона.
+                            // Проверка по габаритам, а не по IsPointInPolygon: после
+                            // снапа грань отпечатка обычно совпадает с линией сетки, и
+                            // углы ячейки лежат НА границе прямоугольника, где проверка
+                            // «строго внутри» даёт false, а совпадающие стороны не дают
+                            // и пересечения — ячейка проскочила бы обе проверки и легла
+                            // поверх мелкой сетки вторым слоем.
+                            continue;
                         }
 
                         if (CellCenterInsideAnyColumn(cell, holePolys))
@@ -332,6 +398,44 @@ namespace MeshPlugin
                             boundaryCells.Add(cell);
                         }
                     }
+                }
+
+                // Мелкая сетка внутри отпечатка пилона. Строится своими координатами,
+                // а не общей сеткой плиты: шаг там ~100 мм, и линии обязаны пройти по
+                // граням и по оси пилона. Ячейки плиты, попавшие внутрь отпечатка,
+                // выброшены выше, а куски у грани отбрасываются по центроиду ниже, —
+                // поэтому наложения двух сеток нет.
+                int pylonInnerCells = 0;
+                double thinnestPylonSide = double.MaxValue;
+                foreach (var r in pylonRects)
+                {
+                    double rx0 = r[0].X, ry0 = r[0].Y, rx1 = r[2].X, ry1 = r[2].Y;
+                    var fx = BuildPylonInnerCoords(rx0, rx1);
+                    var fy = BuildPylonInnerCoords(ry0, ry1);
+
+                    for (int i = 0; i + 1 < fx.Count; i++)
+                    {
+                        for (int j = 0; j + 1 < fy.Count; j++)
+                        {
+                            quadCells.Add(new Point2d[]
+                            {
+                                new Point2d(fx[i], fy[j]),
+                                new Point2d(fx[i + 1], fy[j]),
+                                new Point2d(fx[i + 1], fy[j + 1]),
+                                new Point2d(fx[i], fy[j + 1])
+                            });
+                            pylonInnerCells++;
+
+                            double side = Math.Min(fx[i + 1] - fx[i], fy[j + 1] - fy[j]);
+                            if (side < thinnestPylonSide) thinnestPylonSide = side;
+                        }
+                    }
+                }
+                if (pylonInnerCells > 0)
+                {
+                    ed.WriteMessage($"\nОтпечаток пилонов: контуров {pylonRects.Count}, мелких элементов внутри: {pylonInnerCells} (шаг ~{MeshTol.PylonInnerCell:0} мм)\n");
+                    if (thinnestPylonSide < MinElementSize)
+                        ed.WriteMessage($"ВНИМАНИЕ: самый узкий элемент внутри пилона {thinnestPylonSide:0} мм — меньше минимального размера КЭ ({MinElementSize:0} мм). Так выходит у пилонов тоньше {2 * MeshTol.PylonInnerCell:0} мм: половина толщины и есть ширина элемента.\n");
                 }
 
                 ed.WriteMessage($"\nПостроено квадратных элементов: {quadCells.Count}, ячеек у стен: {wallCells.Count}\n");
@@ -394,6 +498,9 @@ namespace MeshPlugin
                         if (Math.Abs(PolygonArea(piece)) < MeshTol.MinArea) continue;
                         if (PieceInsideAnyColumn(piece, columnPolys)) continue;
                         if (PieceInsideAnyColumn(piece, holePolys)) continue;
+                        // Кусок ячейки, отрезанный гранью отпечатка внутрь пилона:
+                        // там уже лежит своя мелкая сетка.
+                        if (PieceInsideAnyColumn(piece, pylonRects)) continue;
 
                         if (piece.Count == 4 && IsConvexQuad(piece.ToArray()))
                         {
@@ -560,7 +667,7 @@ namespace MeshPlugin
 
                 // Рёбра короче MinElementSize (100 мм) недопустимы: подвижные узлы сетки
                 // смещаются к неподвижной геометрии или сливаются друг с другом.
-                innerSegments = WeldShortNodes(innerSegments, wallSegments, voidPolys, contourPts, out int weldedEdges);
+                innerSegments = WeldShortNodes(innerSegments, wallSegments, voidPolys, contourPts, pylonRects, out int weldedEdges);
                 if (weldedEdges > 0)
                 {
                     innerSegments = DeduplicateSegments(innerSegments);
@@ -583,7 +690,7 @@ namespace MeshPlugin
                     innerSegments = SplitSegmentsAtNodes(innerSegments, cellSize, out _);
 
                 // Финальный шаг: сглаживание подвижных узлов для повышения качества α.
-                innerSegments = SmoothMesh(innerSegments, cutSegments, contourPts, voidPolys, xs, ys, out int smoothedNodes);
+                innerSegments = SmoothMesh(innerSegments, cutSegments, contourPts, voidPolys, pylonRects, xs, ys, out int smoothedNodes);
                 if (smoothedNodes > 0)
                     ed.WriteMessage($"\nСглажено узлов (Лаплас): {smoothedNodes}\n");
 
@@ -675,6 +782,7 @@ namespace MeshPlugin
             List<Point2d[]> cutSegments,
             List<Point2d> contourPts,
             List<List<Point2d>> columnPolys,
+            List<List<Point2d>> fixedRegions,
             List<double> xs,
             List<double> ys,
             out int movedCount)
@@ -710,6 +818,11 @@ namespace MeshPlugin
             bool IsFixedNode(Point2d p)
             {
                 if (OnGridCoord(p.X, xs) && OnGridCoord(p.Y, ys)) return true;
+
+                // Узлы отпечатка пилона (углы, грани, мелкая сетка внутри) неподвижны:
+                // сглаживание увело бы их с граней, и отпечаток перестал бы совпадать
+                // с контуром пилона.
+                if (PointInOrOnAnyPolygon(p, fixedRegions)) return true;
 
                 foreach (var w in cutSegments)
                     if (IsPointOnSegment(p, w[0], w[1], MeshTol.OnSegment)) return true;
@@ -760,6 +873,10 @@ namespace MeshPlugin
                         if (IsPointInPolygon(newP, col)) { inColumn = true; break; }
                     if (inColumn) continue;
 
+                    // Внутрь отпечатка пилона чужой узел заходить не должен — там своя
+                    // мелкая сетка.
+                    if (PointInOrOnAnyPolygon(newP, fixedRegions)) continue;
+
                     bool bad = false;
                     foreach (int nb in neighbors[i])
                     {
@@ -791,6 +908,7 @@ namespace MeshPlugin
             List<Point2d[]> wallSegments,
             List<List<Point2d>> columnPolys,
             List<Point2d> contourPts,
+            List<List<Point2d>> fixedRegions,
             out int weldedCount)
         {
             weldedCount = 0;
@@ -807,6 +925,11 @@ namespace MeshPlugin
 
             bool IsFixedPoint(Point2d p)
             {
+                // Отпечаток пилона неподвижен целиком: иначе узел его грани, оказавшийся
+                // ближе 100 мм к оси пилона (у пилона тоньше 200 мм так всегда),
+                // притянулся бы к оси и отпечаток схлопнулся бы на неё.
+                if (PointInOrOnAnyPolygon(p, fixedRegions)) return true;
+
                 foreach (var w in wallSegments)
                     if (IsPointOnSegment(p, w[0], w[1], MeshTol.OnSegment)) return true;
 
@@ -1525,6 +1648,81 @@ namespace MeshPlugin
             foreach (var col in columns)
             {
                 if (IsPointInPolygon(c, col)) return true;
+            }
+            return false;
+        }
+
+        // Ячейка целиком накрыта прямоугольником отпечатка. Сравниваются габариты, а не
+        // принадлежность точек полигону: и ячейка, и отпечаток осевыровнены, а грань
+        // отпечатка после снапа обычно ЛЕЖИТ на линии сетки — «строго внутри» в этом
+        // случае даёт false для всех четырёх углов.
+        private bool CellInsideAnyRect(Point2d[] cell, List<List<Point2d>> rects)
+        {
+            if (rects.Count == 0) return false;
+            double tol = MeshTol.OnSegment;
+
+            double cminX = double.MaxValue, cminY = double.MaxValue;
+            double cmaxX = double.MinValue, cmaxY = double.MinValue;
+            foreach (var p in cell)
+            {
+                if (p.X < cminX) cminX = p.X;
+                if (p.X > cmaxX) cmaxX = p.X;
+                if (p.Y < cminY) cminY = p.Y;
+                if (p.Y > cmaxY) cmaxY = p.Y;
+            }
+
+            foreach (var r in rects)
+            {
+                double rminX = double.MaxValue, rminY = double.MaxValue;
+                double rmaxX = double.MinValue, rmaxY = double.MinValue;
+                foreach (var p in r)
+                {
+                    if (p.X < rminX) rminX = p.X;
+                    if (p.X > rmaxX) rmaxX = p.X;
+                    if (p.Y < rminY) rminY = p.Y;
+                    if (p.Y > rmaxY) rmaxY = p.Y;
+                }
+
+                if (cminX >= rminX - tol && cmaxX <= rmaxX + tol
+                    && cminY >= rminY - tol && cmaxY <= rmaxY + tol) return true;
+            }
+            return false;
+        }
+
+        // Координаты мелкой сетки внутри отпечатка по одной оси. Каждая половина (от
+        // грани до оси пилона) делится на равные части, поэтому и ГРАНИ, и ОСЬ всегда
+        // остаются линиями сетки: ось обязана быть ребром — по ней экспорт режет
+        // пластину, а центральный узел пилона терять нельзя. Число частей — floor, а не
+        // round: round(150/100)=2 дал бы элементы по 75 мм, вдвое меньше минимального.
+        private List<double> BuildPylonInnerCoords(double a, double b)
+        {
+            var result = new List<double>();
+            double c = (a + b) / 2.0;
+            double half = (b - a) / 2.0;
+
+            int n = (int)Math.Floor(half / MeshTol.PylonInnerCell);
+            if (n < 1) n = 1;
+            double step = half / n;
+
+            for (int i = 0; i < n; i++) result.Add(a + step * i);
+            result.Add(c);
+            for (int i = 1; i < n; i++) result.Add(c + step * i);
+            result.Add(b);
+            return result;
+        }
+
+        // Точка внутри полигона ИЛИ на его стороне. Для отпечатка пилона важна именно
+        // такая проверка: узлы его граней обязаны считаться «своими» наравне с узлами
+        // мелкой сетки внутри, иначе постобработка двигает и сваривает грань.
+        private bool PointInOrOnAnyPolygon(Point2d p, List<List<Point2d>> polys)
+        {
+            if (polys == null) return false;
+            foreach (var poly in polys)
+            {
+                if (IsPointInPolygon(p, poly)) return true;
+                int n = poly.Count;
+                for (int i = 0; i < n; i++)
+                    if (IsPointOnSegment(p, poly[i], poly[(i + 1) % n], MeshTol.OnSegment)) return true;
             }
             return false;
         }

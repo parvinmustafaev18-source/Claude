@@ -762,14 +762,22 @@ namespace MeshPlugin
                 // триггер стержня КЭ 10 при экспорте, у крестового пилона её быть
                 // не должно. Собираются заранее, удаляются попавшие в габарит пилона.
                 var oldPts = new List<KeyValuePair<ObjectId, Point2d>>();
+                // Оси от прежних запусков: контур пилона больше не стирается, поэтому
+                // повторный запуск на том же контуре нарисовал бы вторую ось поверх
+                // первой. Ось, чья середина попала в габарит пилона, заменяется новой.
+                var oldAxes = new List<KeyValuePair<ObjectId, Point2d>>();
                 foreach (ObjectId id in ms)
                 {
                     Entity e = tr.GetObject(id, OpenMode.ForRead) as Entity;
                     if (e is DBPoint dp && IsColumnLayer(e.Layer))
                         oldPts.Add(new KeyValuePair<ObjectId, Point2d>(id, new Point2d(dp.Position.X, dp.Position.Y)));
+                    else if (e is Line oldLn && IsPylonLayer(e.Layer))
+                        oldAxes.Add(new KeyValuePair<ObjectId, Point2d>(id, new Point2d(
+                            (oldLn.StartPoint.X + oldLn.EndPoint.X) / 2.0,
+                            (oldLn.StartPoint.Y + oldLn.EndPoint.Y) / 2.0)));
                 }
 
-                int crossCount = 0, skippedOpen = 0, skippedNotRect = 0, erasedPts = 0;
+                int crossCount = 0, skippedOpen = 0, skippedNotRect = 0, erasedPts = 0, erasedAxes = 0;
 
                 foreach (SelectedObject so in psr.Value)
                 {
@@ -819,6 +827,16 @@ namespace MeshPlugin
                         sizeLayers[wallLayer] = wallLayer;
                     }
 
+                    // Прежняя ось этого же пилона (повторный запуск команды) убирается,
+                    // иначе на одном контуре окажутся две совпадающие оси-пластины.
+                    foreach (var kv in oldAxes)
+                    {
+                        if (kv.Value.X < minX - 1.0 || kv.Value.X > maxX + 1.0
+                            || kv.Value.Y < minY - 1.0 || kv.Value.Y > maxY + 1.0) continue;
+                        Entity e = (Entity)tr.GetObject(kv.Key, OpenMode.ForWrite);
+                        if (!e.IsErased) { e.Erase(); erasedAxes++; }
+                    }
+
                     Line lx = xIsLong
                         ? new Line(new Point3d(cx - b / 2.0, cy, 0), new Point3d(cx + b / 2.0, cy, 0))
                         : new Line(new Point3d(cx, cy - h / 2.0, 0), new Point3d(cx, cy + h / 2.0, 0));
@@ -826,7 +844,11 @@ namespace MeshPlugin
                     ms.AppendEntity(lx);
                     tr.AddNewlyCreatedDBObject(lx, true);
 
-                    pl.Erase();
+                    // Контур НЕ стирается: MESHQUADMESH отпечатывает его на сетке плиты
+                    // (узлы в углах, мелкая сетка внутри). Слой служебный — MESHCLEAN его
+                    // сохраняет, MESHLAYERS не уводит, MESHWALLAXIS не считает стеной.
+                    EnsureLayer(db, tr, PylonOutlineLayerName, 8); // тёмно-серый
+                    pl.Layer = PylonOutlineLayerName;
                     crossCount++;
 
                     foreach (var kv in oldPts)
@@ -839,11 +861,12 @@ namespace MeshPlugin
                 }
 
                 ed.WriteMessage($"\nПилонов заменено осями-пластинами: {crossCount}, слоёв: {sizeLayers.Count}, пропущено незамкнутых: {skippedOpen}, не прямоугольных/повёрнутых: {skippedNotRect}" +
-                    (erasedPts > 0 ? $", удалено старых точек центров: {erasedPts}" : "") + "\n");
+                    (erasedPts > 0 ? $", удалено старых точек центров: {erasedPts}" : "") +
+                    (erasedAxes > 0 ? $", заменено прежних осей: {erasedAxes}" : "") + "\n");
                 foreach (var ln in sizeLayers.Keys)
                     ed.WriteMessage($"  {ln}\n");
                 if (crossCount > 0)
-                    ed.WriteMessage("Дальше ось пилона ведёт себя как стена: MESHQUADMESH врежет её в сетку, принудительно добавит узел в центре поперёк оси, экспорт даст пластины КЭ 44.\n");
+                    ed.WriteMessage($"Контуры пилонов сохранены в слое {PylonOutlineLayerName}: MESHQUADMESH отпечатает их на сетке плиты (узлы в углах, внутри сетка {MeshTol.PylonInnerCell:0} мм). Ось пилона ведёт себя как стена: врежется в сетку, получит узел в центре поперёк оси, экспорт даст пластины КЭ 44.\n");
 
                 tr.Commit();
             }
@@ -1419,6 +1442,110 @@ namespace MeshPlugin
                     new Point2d(mx + px * half, my + py * half)
                 });
             }
+            return result;
+        }
+
+
+        // Контуры пилонов-пластин для ОТПЕЧАТКА на сетке плиты (слой MESH_PYLONS,
+        // сохраняется командой MESHCOLUMNCROSS). Это не пустота, как COLUMNS: внутри
+        // отпечатка сетка плиты есть, только мельче. Возвращаются прямоугольники в CCW.
+        //
+        // Фолбэк по осям нужен для чертежей, сделанных до появления слоя: там
+        // MESHCOLUMNCROSS контур ещё стирал, и восстановить прямоугольник можно только
+        // из самой оси — её длина даёт длинную сторону, толщина из имени слоя короткую.
+        // Ось, уже накрытая сохранённым контуром, второй раз не берётся.
+        private List<List<Point2d>> GetPylonOutlines(
+            Transaction tr, Database db, out int fromAxes, out int skippedNotRect)
+        {
+            var result = new List<List<Point2d>>();
+            fromAxes = 0;
+            skippedNotRect = 0;
+            BlockTableRecord btr = (BlockTableRecord)tr.GetObject(db.CurrentSpaceId, OpenMode.ForRead);
+
+            List<Point2d> Rect(double x0, double y0, double x1, double y1)
+            {
+                return new List<Point2d>
+                {
+                    new Point2d(x0, y0), new Point2d(x1, y0),
+                    new Point2d(x1, y1), new Point2d(x0, y1)
+                };
+            }
+
+            foreach (ObjectId id in btr)
+            {
+                Entity ent = tr.GetObject(id, OpenMode.ForRead) as Entity;
+                if (ent == null || ent.Layer != PylonOutlineLayerName) continue;
+
+                Polyline pl = ent as Polyline;
+                if (pl == null || !pl.Closed) continue;
+
+                var verts = GetPolylineVertices(pl);
+                if (verts.Count < 3) continue;
+
+                double minX = double.MaxValue, minY = double.MaxValue;
+                double maxX = double.MinValue, maxY = double.MinValue;
+                foreach (var p in verts)
+                {
+                    if (p.X < minX) minX = p.X;
+                    if (p.X > maxX) maxX = p.X;
+                    if (p.Y < minY) minY = p.Y;
+                    if (p.Y > maxY) maxY = p.Y;
+                }
+                double b = maxX - minX, h = maxY - minY;
+
+                // Отпечаток строится линиями сетки, поэтому повёрнутый контур отпечатать
+                // нечем: bbox описал бы его неверно. Признак тот же, что в MESHCOLUMNCROSS.
+                if (b < 1.0 || h < 1.0
+                    || Math.Abs(Math.Abs(PolygonArea(verts)) - b * h) > 0.05 * b * h)
+                {
+                    skippedNotRect++;
+                    continue;
+                }
+
+                result.Add(Rect(minX, minY, maxX, maxY));
+            }
+
+            int savedCount = result.Count;
+
+            foreach (ObjectId id in btr)
+            {
+                Line ln = tr.GetObject(id, OpenMode.ForRead) as Line;
+                if (ln == null || !IsPylonLayer(ln.Layer)) continue;
+                double t;
+                if (!TryParseLayerHeight(ln.Layer, out t) || t < 1.0) continue;
+
+                double dx = ln.EndPoint.X - ln.StartPoint.X, dy = ln.EndPoint.Y - ln.StartPoint.Y;
+                if (Math.Sqrt(dx * dx + dy * dy) < 1.0) continue;
+
+                Point2d mid = new Point2d(
+                    (ln.StartPoint.X + ln.EndPoint.X) / 2.0,
+                    (ln.StartPoint.Y + ln.EndPoint.Y) / 2.0);
+
+                bool covered = false;
+                for (int i = 0; i < savedCount; i++)
+                    if (IsPointInPolygon(mid, result[i])) { covered = true; break; }
+                if (covered) continue;
+
+                bool horizontal = Math.Abs(dy) < MeshTol.Collinear;
+                bool vertical = Math.Abs(dx) < MeshTol.Collinear;
+                if (!horizontal && !vertical) { skippedNotRect++; continue; }
+
+                double half = t / 2.0;
+                if (horizontal)
+                {
+                    double x0 = Math.Min(ln.StartPoint.X, ln.EndPoint.X);
+                    double x1 = Math.Max(ln.StartPoint.X, ln.EndPoint.X);
+                    result.Add(Rect(x0, mid.Y - half, x1, mid.Y + half));
+                }
+                else
+                {
+                    double y0 = Math.Min(ln.StartPoint.Y, ln.EndPoint.Y);
+                    double y1 = Math.Max(ln.StartPoint.Y, ln.EndPoint.Y);
+                    result.Add(Rect(mid.X - half, y0, mid.X + half, y1));
+                }
+                fromAxes++;
+            }
+
             return result;
         }
 

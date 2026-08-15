@@ -17,6 +17,7 @@
 | `WALL_DOORS(H-<h>)` | MESHDOORS | `GetDoorEndpoints`, `GetDoorJambConstraints`, `SnapDoorsToGrid`, экспорт | дверной проём высотой h |
 | `WALL_DOORS_MARKS` | MESHDOORS | только чертёж | квадрат 200×200, в ЛИРУ не идёт |
 | `MESH_HOLES` | MESHQUADMESH (`MovePolylinesToHoleLayer`) | `GetHolePolygons`, экспорт | отверстие/проём в плите |
+| `MESH_PYLONS` | MESHCOLUMNCROSS (контур не стирает, а переносит) | `GetPylonOutlines` | контур пилона для отпечатка на сетке; **не пустота** — сетка внутри есть, мелкая |
 | `MESH_ANGLE_MARKS` | `ValidateContour` | — | углы контура ≠ 90°, круги R300 |
 | `MESH_GAP_MARKS` | `ValidateContour` | — | разрыв незамкнутого контура, круги R150 |
 | `ПРОБЛЕМА` | MESHQUADMESH, MESHEXPORTTXT | — | места, где сетка не построилась, R300 |
@@ -42,7 +43,8 @@ Commands.cs:972–982 (маркерные слои и радиусы), Quality.c
 - `IsColumnLayer` — `StartsWith("COLUMNS")`, старый общий слой `COLUMNS` тоже
   считается пилоном. `IsSlabLayer`, `IsMarkLayer` — по своим префиксам.
 - `IsServiceLayer` — созданное самим плагином: плита, стены, двери,
-  `WALL_DOORS_MARKS`, `LINE_TRIANGULATION`, `MESH_HOLES`, `COLUMNS*`.
+  `WALL_DOORS_MARKS`, `LINE_TRIANGULATION`, `MESH_HOLES`, `MESH_PYLONS`,
+  `COLUMNS*`.
   Используется в MESHCLEAN (что не удалять), MESHWALLAXIS (что не принимать за
   контур стены), `MovePolylinesToHoleLayer` (что не превращать в отверстие).
 - `KeepLayer` внутри MESHLAYERS — **шире** `IsServiceLayer`: плюс `IsMarkLayer`
