@@ -94,67 +94,23 @@ namespace MeshPlugin
                 if (!ValidateContour(pline, ed, tr, db, out var contourPts)) { tr.Commit(); return; }
                 EnsureCcw(contourPts);
 
-                double minX = double.MaxValue, minY = double.MaxValue;
-                double maxX = double.MinValue, maxY = double.MinValue;
-                foreach (var p in contourPts)
-                {
-                    if (p.X < minX) minX = p.X;
-                    if (p.X > maxX) maxX = p.X;
-                    if (p.Y < minY) minY = p.Y;
-                    if (p.Y > maxY) maxY = p.Y;
-                }
+                var bb = PolygonBBox(contourPts);
+                double minX = bb[0], minY = bb[1];
+
+                // ---- ЧТЕНИЕ ЧЕРТЕЖА -------------------------------------------------
+                // Снап двигает объекты чертежа к линиям сетки, поэтому он живёт здесь,
+                // а не в расчётном ядре: ядро чертежа не видит вовсе.
 
                 int snappedWalls = SnapWallsToGrid(tr, db, minX, minY, cellSize);
                 var wallSegments = GetWallSegments(tr, db);
                 var doorEnds = GetDoorEndpoints(tr, db); // косяки дверных проёмов — узлы сетки
                 ed.WriteMessage($"\nНайдено сегментов стен: {wallSegments.Count}, подвинуто к узлам сетки (до {WallSnapTolerance:0} мм): {snappedWalls}\n");
 
-                // Жёсткий запрет: контуры стен, как и пилоны, не могут выходить за
-                // пределы фундаментной плиты (касание границы допустимо). Нарушение —
-                // остановка команды без изменений в чертеже.
-                var outsideWalls = new List<string>();
-                var outsideWallPts = new List<Point2d>();
-                foreach (var w in wallSegments)
-                {
-                    if (IsSegmentInsideContour(w[0], w[1], contourPts)) continue;
-                    Point2d wm = new Point2d((w[0].X + w[1].X) / 2.0, (w[0].Y + w[1].Y) / 2.0);
-                    outsideWalls.Add($"({wm.X:0}, {wm.Y:0})");
-                    outsideWallPts.Add(wm);
-                }
-                if (outsideWalls.Count > 0)
-                {
-                    ed.WriteMessage($"\nОшибка: сегменты стен выходят за контур фундаментной плиты ({outsideWalls.Count} шт.), середины: {string.Join(", ", outsideWalls)}. Стена обязана целиком лежать в пределах плиты. Команда остановлена, чертёж не изменён. Проблемные места отмечены кругами в слое {ProblemLayerName}.\n");
-                    // Откат основной транзакции (снап стен и т.п.), маркеры — своей
-                    tr.Abort();
-                    MarkProblemPoints(db, outsideWallPts);
-                    return;
-                }
-
                 // Пилоны (слой COLUMNS): контур пилона врезается в сетку как стены,
                 // внутренность пилона остаётся пустой — только точка в центре.
                 int snappedColumns = SnapColumnsToGrid(tr, db, minX, minY, cellSize);
                 var columnPolys = GetColumnPolygons(tr, db);
-
-                // Жёсткий запрет: контур пилона ни при каких условиях не может выходить
-                // за пределы фундаментной плиты (касание границы допустимо). Нарушение —
-                // остановка команды без изменений в чертеже.
-                var outsideColumns = new List<string>();
-                var outsideColumnPts = new List<Point2d>();
-                foreach (var col in columnPolys)
-                {
-                    if (IsPolygonInsideContour(col, contourPts)) continue;
-                    var cc = ComputeColumnCenters(new List<List<Point2d>> { col })[0];
-                    outsideColumns.Add($"({cc.X:0}, {cc.Y:0})");
-                    outsideColumnPts.Add(cc);
-                }
-                if (outsideColumns.Count > 0)
-                {
-                    ed.WriteMessage($"\nОшибка: пилоны выходят за контур фундаментной плиты ({outsideColumns.Count} шт.), центры: {string.Join(", ", outsideColumns)}. Пилон обязан целиком лежать в пределах плиты. Команда остановлена, чертёж не изменён. Проблемные места отмечены кругами в слое {ProblemLayerName}.\n");
-                    // Откат основной транзакции (снап стен/пилонов), маркеры — своей
-                    tr.Abort();
-                    MarkProblemPoints(db, outsideColumnPts);
-                    return;
-                }
+                ed.WriteMessage($"\nНайдено пилонов: {columnPolys.Count}, подвинуто к сетке (до {WallSnapTolerance:0} мм): {snappedColumns}\n");
 
                 // Отверстия (проёмы) в плите: замкнутые контуры, внутри которых сетки
                 // нет. Геометрически это та же «пустота», что и внутренность пилона, но
@@ -164,651 +120,79 @@ namespace MeshPlugin
                 // исключает грань отверстия из заливки элементами.
                 int movedHoles = MovePolylinesToHoleLayer(tr, db, holeIds, per.ObjectId);
                 var holePolys = GetHolePolygons(tr, db);
-
-                // Жёсткий запрет (как для стен и пилонов): контур отверстия не может
-                // выходить за пределы фундаментной плиты (касание границы допустимо).
-                var outsideHoles = new List<string>();
-                var outsideHolePts = new List<Point2d>();
-                foreach (var h in holePolys)
-                {
-                    if (IsPolygonInsideContour(h, contourPts)) continue;
-                    var hc = PolygonCentroid(h);
-                    outsideHoles.Add($"({hc.X:0}, {hc.Y:0})");
-                    outsideHolePts.Add(hc);
-                }
-                if (outsideHoles.Count > 0)
-                {
-                    ed.WriteMessage($"\nОшибка: контуры отверстий выходят за контур фундаментной плиты ({outsideHoles.Count} шт.), центры: {string.Join(", ", outsideHoles)}. Отверстие обязано целиком лежать в пределах плиты. Команда остановлена, чертёж не изменён. Проблемные места отмечены кругами в слое {ProblemLayerName}.\n");
-                    tr.Abort();
-                    MarkProblemPoints(db, outsideHolePts);
-                    return;
-                }
+                if (holePolys.Count > 0)
+                    ed.WriteMessage($"\nОтверстий (проёмов) в плите: {holePolys.Count}" + (movedHoles > 0 ? $" (перенесено на слой {HoleLayerName}: {movedHoles})" : "") + "\n");
 
                 // Отпечаток контура пилона-пластины (слой MESH_PYLONS). В отличие от
                 // COLUMNS это НЕ пустота: сетка плиты внутри есть, только мелкая. От
                 // контура требуется одно — стать линиями сетки, чтобы углы пилона были
                 // узлами, а не висели посреди элемента.
                 var pylonRects = GetPylonOutlines(tr, db, out int rectsFromAxes, out int rectsNotRect);
-
-                // Тот же жёсткий запрет, что для стен, пилонов и отверстий.
-                var outsideRects = new List<string>();
-                var outsideRectPts = new List<Point2d>();
-                foreach (var r in pylonRects)
-                {
-                    if (IsPolygonInsideContour(r, contourPts)) continue;
-                    var rc = PolygonCentroid(r);
-                    outsideRects.Add($"({rc.X:0}, {rc.Y:0})");
-                    outsideRectPts.Add(rc);
-                }
-                if (outsideRects.Count > 0)
-                {
-                    ed.WriteMessage($"\nОшибка: контуры пилонов выходят за контур фундаментной плиты ({outsideRects.Count} шт.), центры: {string.Join(", ", outsideRects)}. Пилон обязан целиком лежать в пределах плиты. Команда остановлена, чертёж не изменён. Проблемные места отмечены кругами в слое {ProblemLayerName}.\n");
-                    tr.Abort();
-                    MarkProblemPoints(db, outsideRectPts);
-                    return;
-                }
-
                 if (pylonRects.Count > 0)
                     ed.WriteMessage($"\nКонтуров пилонов для отпечатка: {pylonRects.Count}" +
                         (rectsFromAxes > 0 ? $" (восстановлено по осям, без контура на {PylonOutlineLayerName}: {rectsFromAxes})" : "") +
                         (rectsNotRect > 0 ? $", пропущено повёрнутых/непрямоугольных: {rectsNotRect}" : "") + "\n");
 
-                var cutSegments = new List<Point2d[]>(wallSegments);
-                foreach (var col in columnPolys)
-                {
-                    int cn = col.Count;
-                    for (int i = 0; i < cn; i++)
-                        cutSegments.Add(new Point2d[] { col[i], col[(i + 1) % cn] });
-                }
-                // Стороны отверстий врезаются в сетку как грани пилонов: узлы садятся
-                // на кромку, ячейки режутся по ней, внутренняя часть выбрасывается.
-                foreach (var h in holePolys)
-                {
-                    int hn = h.Count;
-                    for (int i = 0; i < hn; i++)
-                        cutSegments.Add(new Point2d[] { h[i], h[(i + 1) % hn] });
-                }
-                ed.WriteMessage($"\nНайдено пилонов: {columnPolys.Count}, подвинуто к сетке (до {WallSnapTolerance:0} мм): {snappedColumns}\n");
-                if (holePolys.Count > 0)
-                    ed.WriteMessage($"\nОтверстий (проёмов) в плите: {holePolys.Count}" + (movedHoles > 0 ? $" (перенесено на слой {HoleLayerName}: {movedHoles})" : "") + "\n");
-
-                // Принудительный поперечный узел в центре пилона: для каждой оси-стены
-                // PILON строим перпендикуляр через её середину. Он идёт ТОЛЬКО в список
-                // разреза ячеек (splitConstraints) — режет ячейки и даёт узел в центре
-                // поперёк оси, но НЕ попадает в cutSegments, чтобы ResolveOverlappingSegments
-                // не удалил это поперечное ребро как совпавшее со «стеной».
-                // У пилона с отпечатком крест не нужен: узел в центре даёт сама мелкая
-                // сетка (её линии проходят и по оси, и поперёк неё), а лишний разрез
-                // режет ячейку по бесконечной прямой и плодит косые рёбра вокруг пилона.
-                var pylonCrosses = GetPylonCrossConstraints(tr, db);
-                var splitConstraints = new List<Point2d[]>(cutSegments);
-                int crossesKept = 0, crossesDropped = 0;
-                foreach (var c in pylonCrosses)
-                {
-                    Point2d cmid = new Point2d((c[0].X + c[1].X) / 2.0, (c[0].Y + c[1].Y) / 2.0);
-                    if (PointInOrOnAnyPolygon(cmid, pylonRects)) { crossesDropped++; continue; }
-                    splitConstraints.Add(c);
-                    crossesKept++;
-                }
-                if (crossesKept > 0)
-                    ed.WriteMessage($"\nПоперечных осей пилонов врезано через центр: {crossesKept}\n");
-                if (crossesDropped > 0)
-                    ed.WriteMessage($"\nПоперечных осей не потребовалось (узел в центре даёт отпечаток): {crossesDropped}\n");
-
-                // Стороны отпечатка НЕ идут ни в cutSegments, ни в splitConstraints.
-                // В cutSegments они были бы «стеной», и ResolveOverlappingSegments снял
-                // бы сам отпечаток. В splitConstraints — резали бы ячейку по БЕСКОНЕЧНОЙ
-                // прямой (SplitPolygonByWalls режет полуплоскостями), то есть далеко за
-                // пределами пилона: отсюда и брались длинные косые рёбра вокруг него.
-                // Ячейку, задетую отпечатком, режет прямоугольная разность ниже.
-                // Здесь стороны нужны только как запрет на слияние треугольников через
-                // грань пилона.
-                var pylonEdges = new List<Point2d[]>();
-                foreach (var r in pylonRects)
-                {
-                    int rn = r.Count;
-                    for (int i = 0; i < rn; i++)
-                        pylonEdges.Add(new Point2d[] { r[i], r[(i + 1) % rn] });
-                }
-                var mergeBlockers = new List<Point2d[]>(splitConstraints);
-                mergeBlockers.AddRange(pylonEdges);
-
-                // Косяки дверных проёмов: первый проход собирает только их координаты —
+                // Косяки дверных проёмов: этот проход собирает только их координаты —
                 // они идут «мягкими» целями в BuildGridCoords. Сами поперечные
-                // ограничения строятся ниже, ПОСЛЕ снапа дверей к готовой сетке, иначе
-                // разрезы остались бы на старых местах.
+                // ограничения строятся позже, ПОСЛЕ снапа дверей к готовой сетке
+                // (обратный вызов SnapDoors ниже), иначе разрезы остались бы на
+                // старых местах.
                 var jambXs = new List<double>();
                 var jambYs = new List<double>();
                 GetDoorJambConstraints(tr, db, cellSize, jambXs, jambYs);
 
-                var quadCells = new List<Point2d[]>();
-                var boundaryCells = new List<Point2d[]>();
-                var wallCells = new List<Point2d[]>();
+                // Оси пилонов-пластин: концы и центр — тоже мягкие цели выравнивания.
+                var axisXs = new List<double>();
+                var axisYs = new List<double>();
+                GetPylonAxisTargets(tr, db, axisXs, axisYs);
 
-                // Линии сетки допускается смещать к граням пилонов для чистоты разбиения
-                // (увеличение ячейки ≤30% шага, но не более 100 мм).
-                var colXs = new List<double>();
-                var colYs = new List<double>();
-                foreach (var col in columnPolys)
+                var input = new MeshInput
                 {
-                    foreach (var p in col)
+                    Contour = contourPts,
+                    CellSize = cellSize,
+                    WallSegments = wallSegments,
+                    DoorEnds = doorEnds,
+                    ColumnPolys = columnPolys,
+                    HolePolys = holePolys,
+                    PylonRects = pylonRects,
+                    PylonCrosses = GetPylonCrossConstraints(tr, db),
+                    JambXs = jambXs,
+                    JambYs = jambYs,
+                    AxisXs = axisXs,
+                    AxisYs = axisYs,
+
+                    // Двери подтягиваются к линиям сетки, а это правка чертежа: ядро
+                    // вызывает этот код сразу после построения координат сетки.
+                    // Квадраты-обозначения перерисовываются по новым серединам.
+                    SnapDoors = (xs, ys, log) =>
                     {
-                        colXs.Add(p.X);
-                        colYs.Add(p.Y);
+                        int snappedDoors = SnapDoorsToGrid(tr, db, xs, ys);
+                        if (snappedDoors > 0)
+                        {
+                            log.Add($"\nДверных отрезков подтянуто к узлам сетки (до {DoorSnapTolerance:0} мм): {snappedDoors}\n");
+                            RedrawAllDoorMarks(tr, db);
+                        }
+                        return GetDoorJambConstraints(tr, db, cellSize, new List<double>(), new List<double>());
                     }
-                }
+                };
 
-                // Грани отпечатка — мягкие цели: если линия сетки рядом, она садится
-                // ровно на грань пилона, и полосы-огрызки между гранью и линией не
-                // остаётся. Жёсткой целью не делаем — вставлять ради каждого пилона
-                // линию через весь план накладно (на плане их бывает под сотню).
-                foreach (var r in pylonRects)
+                // ---- РАСЧЁТ ---------------------------------------------------------
+                var mesh = BuildMeshCore(input);
+                foreach (var line in mesh.Log) ed.WriteMessage(line);
+
+                if (!mesh.Ok)
                 {
-                    foreach (var p in r)
-                    {
-                        colXs.Add(p.X);
-                        colYs.Add(p.Y);
-                    }
+                    // Нарушено жёсткое правило. Откат основной транзакции (снап стен,
+                    // пилонов, перенос отверстий), маркеры — своей.
+                    tr.Abort();
+                    MarkProblemPoints(db, mesh.ErrorPts);
+                    return;
                 }
 
-                // Кромки отверстий — «жёсткие» цели: на каждой обязана лежать линия сетки.
-                // Если ближайшая линия рядом (в пределах допуска) — двигаем её на кромку,
-                // иначе ВСТАВЛЯЕМ новую линию. Тогда прямоугольный проём ложится на целые
-                // ячейки, неполных ячеек по периметру нет, узлы зашивать не нужно —
-                // круги ПРОБЛЕМА у кромок исчезают по построению.
-                var holeXs = new List<double>();
-                var holeYs = new List<double>();
-                foreach (var h in holePolys)
-                {
-                    foreach (var p in h)
-                    {
-                        holeXs.Add(p.X);
-                        holeYs.Add(p.Y);
-                    }
-                }
-
-                // Косяки — «мягкие» цели наравне с гранями пилонов: линия сетки, если она
-                // рядом, садится точно на косяк, и поперечный разрез не оставляет узкой
-                // полосы. Жёсткой целью косяк не делаем — вставлять ради двери линию
-                // через весь план накладно, локального разреза ячеек достаточно.
-                colXs.AddRange(jambXs);
-                colYs.AddRange(jambYs);
-
-                // Оси пилонов-пластин: концы и центр (там узел от поперечного разреза
-                // креста). Без этого линия сетки проходит в 20–80 мм от них и режет
-                // пластину на КЭ в единицы миллиметров.
-                GetPylonAxisTargets(tr, db, colXs, colYs);
-
-                var xs = BuildGridCoords(minX, maxX, cellSize, colXs, holeXs, out int shiftedX, out int insertedX, out int rejectedX);
-                var ys = BuildGridCoords(minY, maxY, cellSize, colYs, holeYs, out int shiftedY, out int insertedY, out int rejectedY);
-                if (shiftedX + shiftedY > 0)
-                    ed.WriteMessage($"\nЛиний сетки смещено к граням пилонов/кромкам отверстий/косякам: {shiftedX + shiftedY}\n");
-                if (insertedX + insertedY > 0)
-                    ed.WriteMessage($"\nЛиний сетки добавлено по кромкам отверстий: {insertedX + insertedY}\n");
-                if (rejectedX + rejectedY > 0)
-                    ed.WriteMessage($"\nЦелей выравнивания пропущено (линия занята другой целью или сдвиг оставил бы полосу уже {MeshTol.MinGridGap(cellSize):0} мм): {rejectedX + rejectedY}\n");
-
-                // Сетка построена — подтягиваем к ней двери (только вдоль стены, до
-                // DoorSnapTolerance) и уже по новым местам строим поперечные разрезы
-                // через косяки. Квадраты-обозначения перерисовываются по новым серединам.
-                int snappedDoors = SnapDoorsToGrid(tr, db, xs, ys);
-                if (snappedDoors > 0)
-                {
-                    ed.WriteMessage($"\nДверных отрезков подтянуто к узлам сетки (до {DoorSnapTolerance:0} мм): {snappedDoors}\n");
-                    RedrawAllDoorMarks(tr, db);
-                }
-
-                var doorJambs = GetDoorJambConstraints(tr, db, cellSize, new List<double>(), new List<double>());
-                splitConstraints.AddRange(doorJambs);
-                if (doorJambs.Count > 0)
-                    ed.WriteMessage($"\nКосяков дверных проёмов врезано в сетку: {doorJambs.Count}\n");
-
-                for (int xi = 0; xi + 1 < xs.Count; xi++)
-                {
-                    for (int yi = 0; yi + 1 < ys.Count; yi++)
-                    {
-                        Point2d[] cell = new Point2d[]
-                        {
-                            new Point2d(xs[xi], ys[yi]),
-                            new Point2d(xs[xi + 1], ys[yi]),
-                            new Point2d(xs[xi + 1], ys[yi + 1]),
-                            new Point2d(xs[xi], ys[yi + 1])
-                        };
-
-                        if (CellInsideAnyColumn(cell, columnPolys))
-                        {
-                            continue; // внутри пилона-стержня (COLUMNS) сетки плиты нет
-                        }
-
-                        if (pylonRects.Count > 0 && !CellInsideAnyRect(cell, pylonRects)
-                            && CellOverlapsAnyRect(cell, pylonRects))
-                        {
-                            // Ячейка задета отпечатком с краю. Режем её ПРЯМОУГОЛЬНОЙ
-                            // РАЗНОСТЬЮ, а не полуплоскостями по граням: полуплоскость
-                            // продолжает грань пилона через всю ячейку и дальше, из-за
-                            // чего вокруг пилона появлялись длинные косые рёбра и вееры
-                            // треугольников. Разность даёт до четырёх прямоугольников,
-                            // каждый из которых идёт по обычному пути классификации.
-                            foreach (var sub in SubtractRects(cell, pylonRects))
-                            {
-                                if (CellTouchesWalls(sub, splitConstraints)) wallCells.Add(sub);
-                                else if (IsCellFullyInside(sub, contourPts)) quadCells.Add(sub);
-                                else boundaryCells.Add(sub);
-                            }
-                            continue;
-                        }
-
-                        if (CellInsideAnyRect(cell, pylonRects))
-                        {
-                            // Ячейка целиком накрыта отпечатком пилона — её место
-                            // займут мелкие ячейки, построенные ниже по граням пилона.
-                            // Проверка по габаритам, а не по IsPointInPolygon: после
-                            // снапа грань отпечатка обычно совпадает с линией сетки, и
-                            // углы ячейки лежат НА границе прямоугольника, где проверка
-                            // «строго внутри» даёт false, а совпадающие стороны не дают
-                            // и пересечения — ячейка проскочила бы обе проверки и легла
-                            // поверх мелкой сетки вторым слоем.
-                            continue;
-                        }
-
-                        if (CellCenterInsideAnyColumn(cell, holePolys))
-                        {
-                            // Внутри проёма сетки нет вообще. Проверяем по ЦЕНТРУ ячейки,
-                            // а НЕ по всем углам: у ячейки, чья внешняя грань лежит ровно
-                            // на кромке проёма, 2 угла на границе (IsPointInPolygon → false),
-                            // поэтому CellInsideAnyColumn её не выбрасывал — она резалась
-                            // позже и оставляла осиротевший узел с кругом ПРОБЛЕМА на шаг
-                            // внутрь кромки. Центр такой ячейки строго внутри → выброс.
-                            continue;
-                        }
-
-                        if (CellTouchesWalls(cell, splitConstraints))
-                        {
-                            wallCells.Add(cell);
-                        }
-                        else if (IsCellFullyInside(cell, contourPts))
-                        {
-                            quadCells.Add(cell);
-                        }
-                        else
-                        {
-                            boundaryCells.Add(cell);
-                        }
-                    }
-                }
-
-                // Мелкая сетка внутри отпечатка пилона. Строится своими координатами,
-                // а не общей сеткой плиты: шаг там ~100 мм, и линии обязаны пройти по
-                // граням и по оси пилона. Ячейки плиты, попавшие внутрь отпечатка,
-                // выброшены выше, а куски у грани отбрасываются по центроиду ниже, —
-                // поэтому наложения двух сеток нет.
-                int pylonInnerCells = 0;
-                double thinnestPylonSide = double.MaxValue;
-                foreach (var r in pylonRects)
-                {
-                    double rx0 = r[0].X, ry0 = r[0].Y, rx1 = r[2].X, ry1 = r[2].Y;
-                    var fx = BuildPylonInnerCoords(rx0, rx1);
-                    var fy = BuildPylonInnerCoords(ry0, ry1);
-
-                    for (int i = 0; i + 1 < fx.Count; i++)
-                    {
-                        for (int j = 0; j + 1 < fy.Count; j++)
-                        {
-                            quadCells.Add(new Point2d[]
-                            {
-                                new Point2d(fx[i], fy[j]),
-                                new Point2d(fx[i + 1], fy[j]),
-                                new Point2d(fx[i + 1], fy[j + 1]),
-                                new Point2d(fx[i], fy[j + 1])
-                            });
-                            pylonInnerCells++;
-
-                            double side = Math.Min(fx[i + 1] - fx[i], fy[j + 1] - fy[j]);
-                            if (side < thinnestPylonSide) thinnestPylonSide = side;
-                        }
-                    }
-                }
-                if (pylonInnerCells > 0)
-                {
-                    ed.WriteMessage($"\nОтпечаток пилонов: контуров {pylonRects.Count}, мелких элементов внутри: {pylonInnerCells} (шаг ~{MeshTol.PylonInnerCell:0} мм)\n");
-                    if (thinnestPylonSide < MinElementSize)
-                        ed.WriteMessage($"ВНИМАНИЕ: самый узкий элемент внутри пилона {thinnestPylonSide:0} мм — меньше минимального размера КЭ ({MinElementSize:0} мм). Так выходит у пилонов тоньше {2 * MeshTol.PylonInnerCell:0} мм: половина толщины и есть ширина элемента.\n");
-                }
-
-                ed.WriteMessage($"\nПостроено квадратных элементов: {quadCells.Count}, ячеек у стен: {wallCells.Count}\n");
-
+                // ---- ОТРИСОВКА ------------------------------------------------------
                 BlockTableRecord btr = (BlockTableRecord)tr.GetObject(db.CurrentSpaceId, OpenMode.ForWrite);
-                var allSegments = new List<Point2d[]>();
-
-                foreach (var cell in quadCells)
-                {
-                    AddQuadSegments(allSegments, cell);
-                }
-
-                // Кайма вдоль границы: каждую неполную ячейку сетки обрезаем по контуру
-                // напрямую (Sutherland-Hodgman), без триангуляции всей полосы.
-                var triVerts = new List<Point2d[]>();
-                var directQuads = new List<Point2d[]>();
-                int failedPolygons = 0;
-                // Центры полигонов, которые не удалось триангулировать, — для кругов
-                // в слое проблем (сетка в этих местах не построится).
-                var failedPolygonPts = new List<Point2d>();
-
-                foreach (var cell in boundaryCells)
-                {
-                    var clipped = ClipPolygonToConvexCell(contourPts, cell);
-                    clipped = CleanupPolygon(clipped);
-
-                    if (clipped.Count < 3) continue;
-                    if (Math.Abs(PolygonArea(clipped)) < MeshTol.MinArea) continue;
-
-                    if (clipped.Count == 4 && IsConvexQuad(clipped.ToArray()))
-                    {
-                        directQuads.Add(clipped.ToArray());
-                    }
-                    else
-                    {
-                        int fBefore = failedPolygons;
-                        foreach (var tri in TriangulateSimplePolygon(clipped, ref failedPolygons))
-                        {
-                            if (Math.Abs(PolygonArea(new List<Point2d>(tri))) < MeshTol.MinArea) continue;
-                            triVerts.Add(tri);
-                        }
-                        if (failedPolygons > fBefore) failedPolygonPts.Add(PolygonCentroid(clipped));
-                    }
-                }
-
-                // Ячейки, задетые стеной: ячейка разрезается по линии стены на части
-                // (Sutherland-Hodgman по обеим полуплоскостям) — стена становится рёбрами
-                // сетки с общими узлами, элементы у стены уменьшаются, но не более чем вдвое.
-                foreach (var cell in wallCells)
-                {
-                    var clipped = ClipPolygonToConvexCell(contourPts, cell);
-                    clipped = CleanupPolygon(clipped);
-
-                    if (clipped.Count < 3) continue;
-                    if (Math.Abs(PolygonArea(clipped)) < MeshTol.MinArea) continue;
-
-                    foreach (var piece in SplitPolygonByWalls(clipped, splitConstraints))
-                    {
-                        if (piece.Count < 3) continue;
-                        if (Math.Abs(PolygonArea(piece)) < MeshTol.MinArea) continue;
-                        if (PieceInsideAnyColumn(piece, columnPolys)) continue;
-                        if (PieceInsideAnyColumn(piece, holePolys)) continue;
-                        // Кусок ячейки, отрезанный гранью отпечатка внутрь пилона:
-                        // там уже лежит своя мелкая сетка.
-                        if (PieceInsideAnyColumn(piece, pylonRects)) continue;
-
-                        if (piece.Count == 4 && IsConvexQuad(piece.ToArray()))
-                        {
-                            directQuads.Add(piece.ToArray());
-                        }
-                        else
-                        {
-                            int fBefore = failedPolygons;
-                            foreach (var tri in TriangulateSimplePolygon(piece, ref failedPolygons))
-                            {
-                                if (Math.Abs(PolygonArea(new List<Point2d>(tri))) < MeshTol.MinArea) continue;
-                                triVerts.Add(tri);
-                            }
-                            if (failedPolygons > fBefore) failedPolygonPts.Add(PolygonCentroid(piece));
-                        }
-                    }
-                }
-
-                foreach (var quad in directQuads)
-                {
-                    AddQuadSegments(allSegments, quad);
-                }
-
-                ed.WriteMessage($"\nТреугольников по краю (до объединения): {triVerts.Count}\n");
-
-                // Справочник "сторона -> какие треугольники её используют".
-                // Узлы треугольников проходят через общий NodeIndex: сторона двух
-                // соседних треугольников опознаётся как общая по допуску слияния,
-                // а не по совпадению округлённых координат.
-                var triNodes = new NodeIndex();
-                var edgeMap = new Dictionary<long, List<int>>();
-
-                for (int i = 0; i < triVerts.Count; i++)
-                {
-                    var t = triVerts[i];
-                    long[] keys = new long[]
-                    {
-                        EdgePairKey(triNodes.GetNode(t[0]), triNodes.GetNode(t[1])),
-                        EdgePairKey(triNodes.GetNode(t[1]), triNodes.GetNode(t[2])),
-                        EdgePairKey(triNodes.GetNode(t[2]), triNodes.GetNode(t[0]))
-                    };
-
-                    foreach (var k in keys)
-                    {
-                        if (!edgeMap.ContainsKey(k))
-                            edgeMap[k] = new List<int>();
-                        edgeMap[k].Add(i);
-                    }
-                }
-
-                // Жадное объединение пар треугольников в четырёхугольники
-                bool[] used = new bool[triVerts.Count];
-                var mergedQuads = new List<Point2d[]>();
-
-                for (int i = 0; i < triVerts.Count; i++)
-                {
-                    if (used[i]) continue;
-
-                    var t = triVerts[i];
-                    long[] keys = new long[]
-                    {
-                        EdgePairKey(triNodes.GetNode(t[0]), triNodes.GetNode(t[1])),
-                        EdgePairKey(triNodes.GetNode(t[1]), triNodes.GetNode(t[2])),
-                        EdgePairKey(triNodes.GetNode(t[2]), triNodes.GetNode(t[0]))
-                    };
-                    Point2d[] edgeStart = new Point2d[] { t[0], t[1], t[2] };
-                    Point2d[] edgeEnd = new Point2d[] { t[1], t[2], t[0] };
-                    Point2d[] opposite = new Point2d[] { t[2], t[0], t[1] };
-
-                    bool merged = false;
-
-                    for (int side = 0; side < 3 && !merged; side++)
-                    {
-                        // Правило ЛИРЫ: не объединять, если через общую сторону проходят
-                        // другие элементы — ребро должно принадлежать ровно двум
-                        // треугольникам и не лежать на стене/грани пилона.
-                        if (edgeMap[keys[side]].Count != 2) continue;
-
-                        Point2d edgeMid = new Point2d(
-                            (edgeStart[side].X + edgeEnd[side].X) / 2.0,
-                            (edgeStart[side].Y + edgeEnd[side].Y) / 2.0);
-                        bool onWall = false;
-                        foreach (var w in mergeBlockers)
-                            if (IsPointOnSegment(edgeMid, w[0], w[1], MeshTol.OnSegment)) { onWall = true; break; }
-                        if (onWall) continue;
-
-                        foreach (int j in edgeMap[keys[side]])
-                        {
-                            if (j == i || used[j]) continue;
-
-                            Point2d d = FindOppositeVertex(triVerts[j], edgeStart[side], edgeEnd[side]);
-                            Point2d a = edgeStart[side];
-                            Point2d b = edgeEnd[side];
-                            Point2d c = opposite[side];
-
-                            Point2d[] quad = new Point2d[] { a, c, b, d };
-
-                            // Сливать только если четырёхугольник не вырожден по углам:
-                            // выпуклый, но игольчатый квад хуже двух нормальных треугольников.
-                            if (IsConvexQuad(quad) && QuadShapeOk(quad))
-                            {
-                                mergedQuads.Add(quad);
-                                used[i] = true;
-                                used[j] = true;
-                                merged = true;
-                                break;
-                            }
-                        }
-                    }
-                }
-
-                int leftoverCount = 0;
-
-                foreach (var quad in mergedQuads)
-                {
-                    AddQuadSegments(allSegments, quad);
-                }
-
-                for (int i = 0; i < triVerts.Count; i++)
-                {
-                    if (used[i]) continue;
-                    leftoverCount++;
-
-                    AddTriSegments(allSegments, triVerts[i]);
-                }
-
-                ed.WriteMessage($"\nПрямых четырёхугольников по краю: {directQuads.Count}, получено четырёхугольников из объединения: {mergedQuads.Count}, осталось одиночных треугольников: {leftoverCount}\n");
-
-                // Контроль качества: дальше элементы превращаются в отрезки и их форма
-                // теряется, поэтому вырожденные элементы пересчитываются здесь.
-                if (failedPolygons > 0)
-                    ed.WriteMessage($"\nВНИМАНИЕ: не удалось триангулировать полигонов: {failedPolygons} — возможны дыры в сетке по краю или у стен.\n");
-
-                int poorTris = 0, poorQuads = 0;
-                double worstAlpha = 1.0;
-                for (int i = 0; i < triVerts.Count; i++)
-                {
-                    if (used[i]) continue;
-                    double alpha = TriangleAlpha(triVerts[i][0], triVerts[i][1], triVerts[i][2]);
-                    if (alpha < worstAlpha) worstAlpha = alpha;
-                    if (alpha < MinQualityAlpha) poorTris++;
-                }
-                foreach (var q in directQuads)
-                {
-                    double alpha = QuadAlpha(q);
-                    if (alpha < worstAlpha) worstAlpha = alpha;
-                    if (alpha < MinQualityAlpha) poorQuads++;
-                }
-                if (poorTris + poorQuads > 0)
-                    ed.WriteMessage($"\nВНИМАНИЕ: элементов с качеством α<{MinQualityAlpha:0.0#} (по методике ЛИРА-САПР): треугольников: {poorTris}, четырёхугольников: {poorQuads}, худший α={worstAlpha:0.00}\n");
-
-                var uniqueSegments = DeduplicateSegments(allSegments);
-                var innerSegments = RemoveSegmentsOnContour(uniqueSegments, contourPts, out int removedOnContour);
-                innerSegments = ResolveOverlappingSegments(innerSegments, cutSegments, out int removedOnWalls, out int mergedOverlaps);
-
-                // Пустоты для функций зашивания сетки: пилоны И отверстия. Внутрь и той,
-                // и другой сетка не заходит, а узлы на их кромке — граничные (фиксированные,
-                // не «открытые»). Функции WeldShortNodes/CloseOpenNodes/SmoothMesh
-                // используют этот список только для обработки границы пустоты, поэтому
-                // отверстия обрабатываются наравне с пилонами без правок внутри них.
-                // Пилон-специфичный EnsureColumnCornerLinks по-прежнему получает columnPolys.
-                var voidPolys = new List<List<Point2d>>(columnPolys);
-                voidPolys.AddRange(holePolys);
-
-                // Рёбра короче MinElementSize (100 мм) недопустимы: подвижные узлы сетки
-                // смещаются к неподвижной геометрии или сливаются друг с другом.
-                innerSegments = WeldShortNodes(innerSegments, wallSegments, voidPolys, contourPts, pylonRects, out int weldedEdges);
-                if (weldedEdges > 0)
-                {
-                    innerSegments = DeduplicateSegments(innerSegments);
-                    innerSegments = RemoveSegmentsOnContour(innerSegments, contourPts, out _);
-                    innerSegments = ResolveOverlappingSegments(innerSegments, cutSegments, out _, out _);
-                }
-
-                // Каждый угол пилона обязан быть связан с сеткой минимум в двух направлениях.
-                innerSegments = EnsureColumnCornerLinks(innerSegments, columnPolys, cellSize, out int cornerLinks);
-
-                // Линия не может обрываться посреди другого элемента: узел, лежащий
-                // внутри чужого отрезка, делит его на два (общий узел для обоих).
-                innerSegments = SplitSegmentsAtNodes(innerSegments, cellSize, out int splitEdges);
-
-                // Открытые узлы недопустимы: точка, упершаяся в линию, замыкается
-                // наклонной в соседний узел (угол по возможности близок к 30/45°).
-                var unclosedNodes = new List<Point2d>();
-                innerSegments = CloseOpenNodes(innerSegments, cutSegments, contourPts, voidPolys, cellSize, out int closedNodes, unclosedNodes);
-                if (closedNodes > 0)
-                    innerSegments = SplitSegmentsAtNodes(innerSegments, cellSize, out _);
-
-                // Финальный шаг: сглаживание подвижных узлов для повышения качества α.
-                innerSegments = SmoothMesh(innerSegments, cutSegments, contourPts, voidPolys, pylonRects, xs, ys, out int smoothedNodes);
-                if (smoothedNodes > 0)
-                    ed.WriteMessage($"\nСглажено узлов (Лаплас): {smoothedNodes}\n");
-
-                // Жёсткое правило: перед отрисовкой ничто не выходит за контур плиты.
-                // Отрезок, пересекающий контур, не удаляется целиком (после удаления
-                // сетка не дотягивалась до границы), а подрезается: наружная часть
-                // отбрасывается, конец внутренней части ложится точно на контур.
-                innerSegments = ClipSegmentsToContour(innerSegments, contourPts, out int clippedToContour, out int removedOutside);
-                if (clippedToContour > 0)
-                    ed.WriteMessage($"\nПодрезано отрезков по контуру плиты: {clippedToContour}\n");
-                if (removedOutside > 0)
-                    ed.WriteMessage($"\nВНИМАНИЕ: удалено отрезков целиком вне контура плиты: {removedOutside}\n");
-
-                // Жёсткое правило: внутренность пилона всегда пуста (только точка в
-                // центре). Любой отрезок, залезший внутрь контура пилона, подрезается
-                // по его сторонам; части строго внутри отбрасываются.
-                innerSegments = ClipSegmentsOutsideColumns(innerSegments, columnPolys, out int clippedAtColumns, out int removedInColumns);
-                if (clippedAtColumns + removedInColumns > 0)
-                    ed.WriteMessage($"\nОчистка внутренностей пилонов: подрезано отрезков: {clippedAtColumns}, удалено целиком внутри: {removedInColumns}\n");
-
-                // То же правило для отверстий: внутри проёма ничего не остаётся.
-                if (holePolys.Count > 0)
-                {
-                    innerSegments = ClipSegmentsOutsideColumns(innerSegments, holePolys, out int clippedAtHoles, out int removedInHoles);
-                    if (clippedAtHoles + removedInHoles > 0)
-                        ed.WriteMessage($"\nОчистка отверстий: подрезано отрезков: {clippedAtHoles}, удалено целиком внутри: {removedInHoles}\n");
-                }
-
-                // Узлы на косяках дверных проёмов: рёбра стены (и любые рёбра, проходящие
-                // через конец дверного отрезка) режем ровно в этих точках, чтобы кусок
-                // стены точно совпал с проёмом при экспорте.
-                if (doorEnds.Count > 0)
-                {
-                    innerSegments = SplitSegmentsAtPoints(innerSegments, doorEnds, MeshTol.DoorOnAxis, out int doorSplits);
-                    if (doorSplits > 0)
-                        ed.WriteMessage($"\nУзлов сетки врезано на косяках дверных проёмов: {doorSplits}\n");
-                }
-
-                // ЖЁСТКОЕ ПРАВИЛО: все узлы контура пилона входят в сетку плиты. Сначала
-                // врезка (ребро, прошедшее через узел насквозь, режется в нём), затем
-                // проверка постусловия — то, что осталось непривязанным, идёт в круги
-                // ПРОБЛЕМА, а не замалчивается.
-                var pylonNodes = CollectPylonOutlineNodes(pylonRects);
-                var unlinkedPylonNodes = new List<Point2d>();
-                if (pylonNodes.Count > 0)
-                {
-                    innerSegments = SplitSegmentsAtPylonNodes(innerSegments, pylonNodes, cellSize, out int pylonNodeSplits);
-                    unlinkedPylonNodes = FindUnlinkedPylonNodes(innerSegments, pylonNodes, cellSize);
-
-                    ed.WriteMessage($"\nУзлы контуров пилонов: всего {pylonNodes.Count}, врезано в проходящие рёбра: {pylonNodeSplits}, не вошло в сетку: {unlinkedPylonNodes.Count}\n");
-                    if (unlinkedPylonNodes.Count > 0)
-                        ed.WriteMessage($"ВНИМАНИЕ: часть узлов контура пилонов не связана с сеткой плиты — отмечены кругами в слое {ProblemLayerName}. Обычная причина: грань пилона прошла в паре миллиметров от линии сетки и полосу схлопнула сварка коротких рёбер.\n");
-                }
-
-                // ЖЁСТКОЕ ПРАВИЛО: линии сетки не пересекаются без узла. Пересечение
-                // без общего узла в ЛИРЕ не связывает элементы (планарный граф строится
-                // по узлам), а в чертеже выглядит как крест посреди элемента. Источники
-                // такие пересечения имеют разные (замыкания открытых узлов, наклонные
-                // после подрезки), поэтому правило проверяется здесь, на итоговой сетке,
-                // а не в каждом этапе по отдельности.
-                int crossingsTotal = 0, crossingsLeft = 0;
-                for (int pass = 0; pass < 3; pass++)
-                {
-                    innerSegments = SplitSegmentsAtIntersections(innerSegments, out crossingsLeft);
-                    if (crossingsLeft == 0) break;
-
-                    crossingsTotal += crossingsLeft;
-                    // Точка пересечения стала узлом — она может лежать и на третьем ребре.
-                    innerSegments = SplitSegmentsAtNodes(innerSegments, cellSize, out _);
-                    innerSegments = DeduplicateSegments(innerSegments);
-                }
-                if (crossingsTotal > 0)
-                    ed.WriteMessage($"\nПересечений линий без узла: {crossingsTotal} — в каждое врезан узел.\n");
-                if (crossingsLeft > 0)
-                    ed.WriteMessage($"ВНИМАНИЕ: пересечений без узла осталось: {crossingsLeft} — сообщите об этом, это ошибка плагина.\n");
-
-                // Постусловия: то, что конвейер обязан был обеспечить своими этапами,
-                // проверяется числом, а не на глаз по чертежу (см. SelfCheck.cs).
-                RunMeshSelfCheck(ed, innerSegments, contourPts, voidPolys);
-
-                foreach (var seg in innerSegments)
+                foreach (var seg in mesh.Segments)
                     DrawSegment(btr, tr, seg[0], seg[1]);
 
                 // Контур пилона разбивается на отрезки и переносится в слой линий
@@ -817,26 +201,10 @@ namespace MeshPlugin
                 if (explodedColumns > 0)
                     ed.WriteMessage($"\nКонтуров пилонов разбито на отрезки в {TriangulationLayerName}: {explodedColumns}\n");
 
-                ed.WriteMessage($"\nОтрезков всего: {allSegments.Count}, после удаления совпадающих: {uniqueSegments.Count}, удалено по внешнему контуру: {removedOnContour}, срезано по стенам: {removedOnWalls}, устранено наложений: {mergedOverlaps}, схлопнуто коротких рёбер: {weldedEdges}, связей углов пилонов: {cornerLinks}, разбито рёбер узлами: {splitEdges}, замкнуто открытых узлов: {closedNodes}, итог: {innerSegments.Count}\n");
-
-                // Маркировка проблем: центры нетриангулированных полигонов и открытые
-                // узлы, которые не удалось замкнуть, — красные круги в слое проблем.
-                // Страховка: точку строго внутри пустоты (проёма/пилона) НЕ помечаем —
-                // сетки там и не должно быть, а «незамкнутость» фиксировалась ДО финальной
-                // обрезки проёмов и оставляла осиротевшие круги в пустоте.
-                var problemPts = new List<Point2d>();
-                foreach (var p in failedPolygonPts)
-                    if (!PointInsideAnyVoid(p, voidPolys)) problemPts.Add(p);
-                foreach (var p in unclosedNodes)
-                    if (!PointInsideAnyVoid(p, voidPolys)) problemPts.Add(p);
-                // Узлы контура пилона отмечаются без фильтра по пустотам: они лежат на
-                // грани отпечатка, а отпечаток — не пустота.
-                problemPts.AddRange(unlinkedPylonNodes);
-                if (problemPts.Count > 0)
-                {
-                    DrawMarkCircles(tr, db, ProblemLayerName, problemPts, ProblemMarkRadius);
-                    ed.WriteMessage($"\nВНИМАНИЕ: проблемных мест сетки: {problemPts.Count} (не разбитых полигонов: {failedPolygonPts.Count}, незамкнутых узлов: {unclosedNodes.Count}, узлов контура пилонов вне сетки: {unlinkedPylonNodes.Count}) — отмечены кругами в слое {ProblemLayerName}. Поправьте расположение объектов в этих местах и перестройте сетку.\n");
-                }
+                // Проблемные места сетки — красные круги в слое проблем (список и
+                // сообщение о нём собрало ядро).
+                if (mesh.ProblemPts.Count > 0)
+                    DrawMarkCircles(tr, db, ProblemLayerName, mesh.ProblemPts, ProblemMarkRadius);
 
                 tr.Commit();
             }

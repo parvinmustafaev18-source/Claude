@@ -150,10 +150,11 @@ namespace MeshPlugin
         //   2. внутренность пилона и проёма пуста     (ClipSegmentsOutsideColumns);
         //   3. нет рёбер короче MinElementSize        (WeldShortNodes);
         //   4. нет совпадающих и вырожденных рёбер    (DeduplicateSegments).
-        // Проверка ничего не исправляет и не меняет чертёж — только считает и
-        // печатает: молчаливое «исправление» скрыло бы сбой этапа.
+        // Проверка ничего не исправляет и не меняет чертёж — только считает: числа
+        // идут и в журнал (его печатает команда), и в поля MeshResult, по которым
+        // выносит вердикт самотест. Молчаливое «исправление» скрыло бы сбой этапа.
         private void RunMeshSelfCheck(
-            Editor ed,
+            MeshResult res,
             List<Point2d[]> segments,
             List<Point2d> contourPts,
             List<List<Point2d>> voidPolys)
@@ -211,17 +212,23 @@ namespace MeshPlugin
                 }
             }
 
-            ed.WriteMessage(
+            res.OutsideContour = outsideContour;
+            res.InsideVoid = insideVoid;
+            res.ShortEdges = shortEdges;
+            res.DuplicateEdges = duplicates;
+            res.DegenerateEdges = degenerate;
+
+            res.Log.Add(
                 $"\nСамопроверка сетки: рёбер {segments.Count}; вне контура плиты: {outsideContour}, " +
                 $"внутри пилонов/проёмов: {insideVoid}, короче {MeshTol.MinElementSize:0} мм: {shortEdges}, " +
                 $"совпадающих: {duplicates}, вырожденных: {degenerate}\n");
 
             if (outsideContour + insideVoid > 0)
-                ed.WriteMessage($"ВНИМАНИЕ: нарушены жёсткие правила обрезки сетки{(samples.Count > 0 ? ", например: " + string.Join("; ", samples) : "")} — сообщите об этом, это ошибка плагина, а не чертежа.\n");
+                res.Log.Add($"ВНИМАНИЕ: нарушены жёсткие правила обрезки сетки{(samples.Count > 0 ? ", например: " + string.Join("; ", samples) : "")} — сообщите об этом, это ошибка плагина, а не чертежа.\n");
             if (shortEdges > 0)
-                ed.WriteMessage($"ВНИМАНИЕ: рёбер короче {MeshTol.MinElementSize:0} мм: {shortEdges}, самое короткое {worstShort:0.#} мм у точки ({worstShortPt.X:0}, {worstShortPt.Y:0}) — в этих местах КЭ вырожденные.\n");
+                res.Log.Add($"ВНИМАНИЕ: рёбер короче {MeshTol.MinElementSize:0} мм: {shortEdges}, самое короткое {worstShort:0.#} мм у точки ({worstShortPt.X:0}, {worstShortPt.Y:0}) — в этих местах КЭ вырожденные.\n");
             if (duplicates + degenerate > 0)
-                ed.WriteMessage($"ВНИМАНИЕ: совпадающих рёбер: {duplicates}, вырожденных: {degenerate} — в ЛИРЕ это наложенные элементы.\n");
+                res.Log.Add($"ВНИМАНИЕ: совпадающих рёбер: {duplicates}, вырожденных: {degenerate} — в ЛИРЕ это наложенные элементы.\n");
         }
     }
 }

@@ -99,6 +99,7 @@
     <Compile Include="Defs.cs" />
     <Compile Include="Geometry.cs" />
     <Compile Include="LiraExport.cs" />
+    <Compile Include="MeshCore.cs" />
     <Compile Include="QuadMesh.cs" />
     <Compile Include="Quality.cs" />
     <Compile Include="SelfCheck.cs" />
