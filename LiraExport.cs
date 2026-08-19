@@ -344,7 +344,7 @@ namespace MeshPlugin
                     segments = SplitSegmentsAtPoints(segments, jambs, MeshTol.DoorOnAxis, out doorJambSplits);
                 }
 
-                segments = SplitSegmentsAtNodes(segments, 500.0, out _);
+                segments = SplitSegmentsAtNodes(segments, 500.0, out _, out _);
                 segments = DeduplicateSegments(segments);
 
                 // Узлы и рёбра планарного графа

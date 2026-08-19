@@ -193,7 +193,7 @@ namespace MeshPlugin
 
             segments = DeduplicateSegments(segments);
             segments = SplitSegmentsAtIntersections(segments, out _);
-            segments = SplitSegmentsAtNodes(segments, 500.0, out _);
+            segments = SplitSegmentsAtNodes(segments, 500.0, out _, out _);
             segments = DeduplicateSegments(segments);
 
             var ni = new NodeIndex();

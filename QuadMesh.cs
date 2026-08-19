@@ -923,12 +923,21 @@ namespace MeshPlugin
 
         // Линия сетки не может обрываться посреди другого элемента: каждый узел,
         // лежащий внутри чужого отрезка, делит этот отрезок на два.
+        // ВАЖНО про совпадающие рёбра. Если до сюда дожили два наложенных коллинеарных
+        // отрезка (A-B и A-C, где C лежит внутри A-B), разрез A-B по узлу C даёт кусок
+        // A-C, который в списке уже есть, — на выходе получается пара совпадающих
+        // рёбер, а в ЛИРЕ наложенные элементы. Функция сама породила этот кусок, ей
+        // его и не выпускать дважды: каждое ребро уходит в результат один раз, счётчик
+        // отброшенных возвращается наружу. Наложение при этом схлопывается правильно:
+        // A-B и A-C превращаются в A-C и C-B.
         private List<Point2d[]> SplitSegmentsAtNodes(
             List<Point2d[]> segments,
             double cellSize,
-            out int splitCount)
+            out int splitCount,
+            out int droppedDuplicates)
         {
             splitCount = 0;
+            droppedDuplicates = 0;
 
             // Список уникальных узлов: совпадение по допуску слияния, а не по
             // округлённым координатам (иначе один узел мог попасть в список дважды
@@ -948,6 +957,7 @@ namespace MeshPlugin
                 nodeGrid.Add(i, nodes[i]);
 
             var result = new List<Point2d[]>();
+            var emitted = new HashSet<long>();
 
             foreach (var seg in segments)
             {
@@ -971,7 +981,7 @@ namespace MeshPlugin
 
                 if (cuts.Count == 0)
                 {
-                    result.Add(seg);
+                    if (!Emit(result, emitted, ni, a, b)) droppedDuplicates++;
                     continue;
                 }
 
@@ -979,14 +989,23 @@ namespace MeshPlugin
                 Point2d prev = a;
                 foreach (var cut in cuts)
                 {
-                    result.Add(new Point2d[] { prev, cut.Value });
+                    if (!Emit(result, emitted, ni, prev, cut.Value)) droppedDuplicates++;
                     prev = cut.Value;
                 }
-                result.Add(new Point2d[] { prev, b });
+                if (!Emit(result, emitted, ni, prev, b)) droppedDuplicates++;
                 splitCount += cuts.Count;
             }
 
             return result;
+        }
+
+        // Кладёт ребро в результат, если такого там ещё нет. Возвращает false, когда
+        // ребро отброшено как совпадающее.
+        private bool Emit(List<Point2d[]> result, HashSet<long> emitted, NodeIndex ni, Point2d a, Point2d b)
+        {
+            if (!emitted.Add(EdgePairKey(ni.GetNode(a), ni.GetNode(b)))) return false;
+            result.Add(new Point2d[] { a, b });
+            return true;
         }
 
         // Узлы контура пилона: углы плюс точки мелкой сетки на его гранях. Ровно этими
@@ -1136,11 +1155,16 @@ namespace MeshPlugin
                 {
                     Point2d corner = col[ci];
 
+                    // Заодно с подсчётом запоминаем, С КЕМ угол уже связан: концы
+                    // отрезков лежат в endpoints парами (0-1, 2-3, ...), поэтому
+                    // второй конец инцидентного отрезка — сосед по индексу (pi ^ 1).
                     int incident = 0;
+                    var linked = new List<Point2d>(2);
                     foreach (int pi in endpointGrid.QueryRadius(corner, queryRadius))
                     {
-                        if (endpoints[pi].GetDistanceTo(corner) < MeshTol.NodeMerge)
-                            incident++;
+                        if (endpoints[pi].GetDistanceTo(corner) >= MeshTol.NodeMerge) continue;
+                        incident++;
+                        linked.Add(endpoints[pi ^ 1]);
                     }
                     if (incident >= 2) continue;
 
@@ -1153,6 +1177,16 @@ namespace MeshPlugin
                         double d = p.GetDistanceTo(corner);
                         if (d < MeshTol.NodeMerge || d > cellSize + 1e-6 || d >= bestDist) continue;
                         if (IsPointInPolygon(p, col)) continue;
+
+                        // Единственный имеющийся отрезок угла может вести ровно в тот
+                        // узел, который здесь ищется как ближайший, — тогда связь
+                        // добавилась бы вторым слоем поверх существующей. В ЛИРЕ это
+                        // наложенные элементы; на выдуманных планах самотеста такие
+                        // рёбра появлялись в 24 случаях из 30.
+                        bool already = false;
+                        foreach (var q in linked)
+                            if (q.GetDistanceTo(p) < MeshTol.NodeMerge) { already = true; break; }
+                        if (already) continue;
 
                         bool onEdge = false;
                         for (int k = 0; k < n; k++)
@@ -1167,6 +1201,11 @@ namespace MeshPlugin
                     {
                         segments.Add(new Point2d[] { corner, best });
                         addedCount++;
+
+                        // Новая связь тоже идёт в индекс: у соседнего пилона может
+                        // оказаться тот же угол, и без этого он добавил бы её ещё раз.
+                        endpointGrid.Add(endpoints.Count, corner); endpoints.Add(corner);
+                        endpointGrid.Add(endpoints.Count, best); endpoints.Add(best);
                     }
                 }
             }

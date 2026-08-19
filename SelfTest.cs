@@ -207,6 +207,9 @@ namespace MeshPlugin
             ed.WriteMessage($"\nПлан {plan.Seed}: {plan.Describe()}\n");
 
             var res = BuildMeshCore(PlanToInput(plan, 0.0, 0.0, false));
+            // Журнал расчёта печатается целиком: на одном плане важно видеть не
+            // вердикт, а на каком этапе конвейера появились лишние числа.
+            foreach (var line in res.Log) ed.WriteMessage(line);
             var bad = CheckMeshInvariants(res);
             ed.WriteMessage(bad.Count == 0
                 ? "Расчёт по этому плану правил не нарушает.\n"

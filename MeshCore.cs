@@ -653,14 +653,19 @@ namespace MeshPlugin
 
             // Линия не может обрываться посреди другого элемента: узел, лежащий
             // внутри чужого отрезка, делит его на два (общий узел для обоих).
-            innerSegments = SplitSegmentsAtNodes(innerSegments, cellSize, out int splitEdges);
+            int splitDupsTotal = 0;
+            innerSegments = SplitSegmentsAtNodes(innerSegments, cellSize, out int splitEdges, out int splitDupsA);
+            splitDupsTotal += splitDupsA;
 
             // Открытые узлы недопустимы: точка, упершаяся в линию, замыкается
             // наклонной в соседний узел (угол по возможности близок к 30/45°).
             var unclosedNodes = new List<Point2d>();
             innerSegments = CloseOpenNodes(innerSegments, cutSegments, contourPts, voidPolys, cellSize, out int closedNodes, unclosedNodes);
             if (closedNodes > 0)
-                innerSegments = SplitSegmentsAtNodes(innerSegments, cellSize, out _);
+            {
+                innerSegments = SplitSegmentsAtNodes(innerSegments, cellSize, out _, out int splitDupsB);
+                splitDupsTotal += splitDupsB;
+            }
 
             // Финальный шаг: сглаживание подвижных узлов для повышения качества α.
             innerSegments = SmoothMesh(innerSegments, cutSegments, contourPts, voidPolys, pylonRects, xs, ys, out int smoothedNodes);
@@ -733,7 +738,8 @@ namespace MeshPlugin
 
                 crossingsTotal += crossingsLeft;
                 // Точка пересечения стала узлом — она может лежать и на третьем ребре.
-                innerSegments = SplitSegmentsAtNodes(innerSegments, cellSize, out _);
+                innerSegments = SplitSegmentsAtNodes(innerSegments, cellSize, out _, out int splitDupsC);
+                splitDupsTotal += splitDupsC;
                 innerSegments = DeduplicateSegments(innerSegments);
             }
             res.CrossingsLeft = crossingsLeft;
@@ -746,7 +752,7 @@ namespace MeshPlugin
             // проверяется числом, а не на глаз по чертежу (см. SelfCheck.cs).
             RunMeshSelfCheck(res, innerSegments, contourPts, voidPolys);
 
-            res.Log.Add($"\nОтрезков всего: {allSegments.Count}, после удаления совпадающих: {uniqueSegments.Count}, удалено по внешнему контуру: {removedOnContour}, срезано по стенам: {removedOnWalls}, устранено наложений: {mergedOverlaps}, схлопнуто коротких рёбер: {weldedEdges}, связей углов пилонов: {cornerLinks}, разбито рёбер узлами: {splitEdges}, замкнуто открытых узлов: {closedNodes}, итог: {innerSegments.Count}\n");
+            res.Log.Add($"\nОтрезков всего: {allSegments.Count}, после удаления совпадающих: {uniqueSegments.Count}, удалено по внешнему контуру: {removedOnContour}, срезано по стенам: {removedOnWalls}, устранено наложений: {mergedOverlaps}, схлопнуто коротких рёбер: {weldedEdges}, связей углов пилонов: {cornerLinks}, разбито рёбер узлами: {splitEdges}, отброшено совпавших при разрезке: {splitDupsTotal}, замкнуто открытых узлов: {closedNodes}, итог: {innerSegments.Count}\n");
 
             // Маркировка проблем: центры нетриангулированных полигонов и открытые
             // узлы, которые не удалось замкнуть, — красные круги в слое проблем.
