@@ -1,8 +1,13 @@
 # Команды плагина
 
 Порядок на плане: MESHLAYERS → MESHWALLAXIS/MESHWALLS → MESHDOORS →
-MESHCOLUMNCROSS → (MESHWALLJOIN, MESHCLEAN) → MESHQUADMESH → (MESHQUALITY) →
-MESHEXPORTTXT.
+MESHCOLUMNCROSS → (MESHWALLJOIN) → MESHCHECK → MESHQUADMESH → MESHEXPORTTXT.
+
+Команды MESHCLEAN, MESHCOLUMNSBAR и MESHQUALITY убраны 23.08.2026 по решению
+пользователя как довесок: уборка чертежа к сетке отношения не имела, пилон
+стержнем вытеснен MESHCOLUMNCROSS, а предупреждение о плохих элементах печатает
+сама MESHQUADMESH. Чтение старых чертежей сохранено: точка центра в слое
+`COLUMNS` по-прежнему даёт стержень КЭ 10 при экспорте.
 
 | Команда | Файл:строка | Вход | Результат |
 |---|---|---|---|
@@ -11,17 +16,14 @@ MESHEXPORTTXT.
 | MESHWALLS | Commands.cs:134 | толщина, Line+LWPolyline | всё выбранное → `WALLS(H-t)` |
 | MESHDOORS | Commands.cs:193 | высота (2100), отрезки на осях стен | → `WALL_DOORS(H-h)` + квадраты в `WALL_DOORS_MARKS` |
 | MESHWALLAXIS | Commands.cs:276 | замкнутые контуры стен | ось между серединами торцов → `WALLS(H-t)`, контур цел |
-| MESHCLEAN | Commands.cs:377 | — (спрашивает Yes/No) | удаляет всё вне служебных слоёв |
 | MESHWALLJOIN | Commands.cs:454 | отрезки, макс. зазор (500) | продление до пересечения + слияние коллинеарных |
-| MESHCOLUMNSBAR | Commands.cs:640 | замкнутые контуры пилонов | контур → `COLUMNS(SEC-RC_RECT B-.. H-..)` + DBPoint центра |
 | MESHCOLUMNCROSS | Commands.cs:733 | замкнутые контуры пилонов | одна ось в `WALLS(H-t PILON)`, контур → `MESH_PYLONS` |
 | MESHQUADMESH | QuadMesh.cs:13 | контур плиты, шаг (300/400/500), контуры отверстий | сетка линиями в `LINE_TRIANGULATION` |
 | MESHCHECK | Check.cs:23 | контур плиты, шаг (300) | список всех замечаний по чертежу + круги в `ПРОБЛЕМА`; ничего не строит |
-| MESHQUALITY | Quality.cs:35 | контур плиты, Critical/Mosaic | мозаика заливок `MESH_QUALITY_*` либо контуры в `ПЛОХИЕ` |
 | MESHEXPORTTXT | LiraExport.cs:18 | — | .txt для ЛИРА-САПР (см. skill `lira-sapr-mesh-export`) |
 
 Инвариант баланса площадей (`ReportAreaBalance`, SelfCheck.cs) печатается в конце
-MESHQUALITY и MESHEXPORTTXT: сумма площадей пластин обязана сойтись с площадью
+MESHEXPORTTXT: сумма площадей пластин обязана сойтись с площадью
 контура за вычетом отверстий (порог `MeshTol.AreaBalanceRelTol` = 0.1%). Недобор
 = дыра в схеме ЛИРЫ, перебор = залитый проём или наложенные элементы.
 
@@ -73,24 +75,12 @@ MESHQUALITY и MESHEXPORTTXT: сумма площадей пластин обя�
 (Commands.cs:1029) в отдельном слое `WALL_DOORS_MARKS`; повторный запуск на тех
 же отрезках старые квадраты стирает (ищет в пределах `DoorMarkSize` от середины).
 
-## MESHCLEAN — Commands.cs:377
-
-Удаляет из текущего пространства всё, для чего `IsServiceLayer` = false.
-Заблокированные слои пропускает со счётчиком. Спрашивает Yes/No с количеством,
-по умолчанию No. Откат — одно Ctrl+Z.
-
 ## MESHWALLJOIN — Commands.cs:454
 
 До 5 проходов, в каждом: слияние коллинеарных отрезков **одного слоя**
 (боковое отклонение ≤1 мм, зазор ≤ maxGap) и продление непараллельных до точки
 пересечения прямых. Только удлинение, укорачивания нет. maxGap ограничивает
 дотягивание, чтобы случайный выбор не продлил ось через весь план.
-
-## MESHCOLUMNSBAR — Commands.cs:640 (старый режим)
-
-Контур → слой на типоразмер `COLUMNS(SEC-RC_RECT B-.. H-..)` по bbox
-(`ColumnLayerNameFor`, Commands.cs:1132) + `DBPoint` в центре. Точка в COLUMNS —
-триггер стержня КЭ 10 при экспорте. Внутренность пилона остаётся пустой.
 
 ## MESHCOLUMNCROSS — Commands.cs:733 (основной режим)
 
@@ -136,23 +126,6 @@ Pre-flight: те же требования к входу, что проверя�
 Проверки контура (самопересечения, углы) общие с `ValidateContour`:
 `FindSelfIntersections` и `FindNonRightCorners` в Geometry.cs. Разница в
 реакции: `ValidateContour` падает на первом, MESHCHECK показывает все.
-
-## MESHQUALITY — Quality.cs:35
-
-Перепроверка качества **действующей** сетки после ручных правок, без
-перестройки: элементы собираются заново из линий чертежа
-(`LINE_TRIANGULATION` + `WALLS(H-` + контур) в `BuildQualityPlates`
-(Quality.cs:139). Основная оценка идёт при построении в MESHQUADMESH.
-
-Контуры `MESH_HOLES` тоже читаются: их стороны идут в планарный граф, а пластины
-с центром внутри проёма выбрасываются — иначе грань вокруг проёма разливается
-внутрь и качество оценивается у несуществующих элементов.
-
-Режимы: `Critical` (default) — только α < 0.3, белые контуры в слое `ПЛОХИЕ`;
-`Mosaic` — полная мозаика заливок Solid по градациям, заливки уводятся под линии
-через `DrawOrderTable.MoveToBottom`. Пороги: α ≥ 0.5 зелёный, 0.3–0.5 жёлтый,
-< 0.3 красный (`QualityAlphaMid`/`QualityAlphaBad`, Quality.cs:21).
-Старые заливки и контуры стираются в начале каждого запуска.
 
 ## MESHEXPORTTXT — LiraExport.cs:18
 

@@ -1,4 +1,4 @@
-using Autodesk.AutoCAD.ApplicationServices;
+﻿using Autodesk.AutoCAD.ApplicationServices;
 using Autodesk.AutoCAD.DatabaseServices;
 using Autodesk.AutoCAD.EditorInput;
 using Autodesk.AutoCAD.Geometry;
@@ -253,7 +253,7 @@ namespace MeshPlugin
                     if (!has) { colsNoCenter++; marks.Add(PolygonCentroid(c)); }
                 }
                 if (colsNoCenter > 0)
-                    warnings.Add($"контуров пилонов без точки центра: {colsNoCenter} — запустите MESHCOLUMNCROSS (пластина) или MESHCOLUMNSBAR (стержень)");
+                    warnings.Add($"контуров пилонов без точки центра: {colsNoCenter} — запустите MESHCOLUMNCROSS");
 
                 // ---- 6. Задвоенные оси ----------------------------------------------
                 int dupWalls = DuplicateSegmentCount(wallSegs);

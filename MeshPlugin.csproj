@@ -101,7 +101,6 @@
     <Compile Include="LiraExport.cs" />
     <Compile Include="MeshCore.cs" />
     <Compile Include="QuadMesh.cs" />
-    <Compile Include="Quality.cs" />
     <Compile Include="SelfCheck.cs" />
     <Compile Include="SelfTest.cs" />
     <Compile Include="SpatialGrid.cs" />
