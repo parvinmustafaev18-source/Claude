@@ -22,6 +22,17 @@ if not errorlevel 1 (
     goto :fail
 )
 
+rem --- 1.5. Папка AutoCAD: если он стоит не в C:\Program Files\Autodesk,
+rem      взять папку из реестра. MSBuild читает переменные окружения как
+rem      свойства проекта, поэтому достаточно задать AcadDir здесь.
+if not defined AcadDir (
+    for /f "tokens=2,*" %%A in ('reg query "HKLM\SOFTWARE\Autodesk\AutoCAD" /s /v AcadLocation 2^>nul ^| find "AcadLocation"') do set "AcadDir=%%B"
+)
+if defined AcadDir if not "%AcadDir:~-1%"=="\" set "AcadDir=%AcadDir%\"
+rem Путь из реестра может указывать на снесённую версию - проверяем библиотеку.
+if defined AcadDir if not exist "%AcadDir%acdbmgd.dll" set "AcadDir="
+if defined AcadDir echo Папка AutoCAD: %AcadDir%
+
 rem --- 2. Найти MSBuild: сначала через vswhere, потом по типовым путям ---
 set "MSBUILD="
 set "VSWHERE=%ProgramFiles(x86)%\Microsoft Visual Studio\Installer\vswhere.exe"

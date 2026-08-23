@@ -54,6 +54,10 @@ Geometry / Quality / SelfCheck / SelfTest / Check / Defs / BuildInfo, плюс `
 ```
 
 Папка AutoCAD ищется автоматически (2019–2026); переопределить — `/p:AcadDir="..."`.
+`build.bat` вдобавок берёт папку из реестра (`HKLM\SOFTWARE\Autodesk\AutoCAD` → `AcadLocation`) и кладёт её в переменную
+окружения `AcadDir` — MSBuild читает переменные окружения как свойства проекта.
+Нужно там, где AutoCAD стоит не в `C:\Program Files\Autodesk` (на втором
+домашнем компьютере это `F:\Автокад 2024\AutoCAD 2024\`).
 Post-build сам собирает бандл `%APPDATA%\Autodesk\ApplicationPlugins\MeshPlugin.bundle`
 из `bundle\PackageContents.xml` + DLL.
 
