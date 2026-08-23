@@ -558,5 +558,89 @@ namespace MeshPlugin
             return false;
         }
 
+        // Врезка узлов в Х-пересечения (жёсткое правило 6: линии сетки не
+        // пересекаются без узла). Раньше жило в Quality.cs рядом с командой
+        // MESHQUALITY; команду убрали, а обе функции нужны MeshCore.
+        // Точка пересечения внутренностей двух отрезков (не касание концом — те
+        // случаи закрывает SplitSegmentsAtNodes). Коллинеарные наложения не в счёт:
+        // после разрезания по узлам их куски совпадают и уходят в DeduplicateSegments.
+        private bool SegmentCrossingPoint(Point2d p1, Point2d p2, Point2d p3, Point2d p4, out Point2d ip)
+        {
+            ip = Point2d.Origin;
+            double d1x = p2.X - p1.X, d1y = p2.Y - p1.Y;
+            double d2x = p4.X - p3.X, d2y = p4.Y - p3.Y;
+            double denom = d1x * d2y - d1y * d2x;
+            if (Math.Abs(denom) < 1e-12) return false;
+
+            double t = ((p3.X - p1.X) * d2y - (p3.Y - p1.Y) * d2x) / denom;
+            double u = ((p3.X - p1.X) * d1y - (p3.Y - p1.Y) * d1x) / denom;
+            if (t < 0.0 || t > 1.0 || u < 0.0 || u > 1.0) return false;
+
+            ip = new Point2d(p1.X + d1x * t, p1.Y + d1y * t);
+            // ближе 0.5 мм к любому концу — узловое касание, не Х-пересечение
+            if (ip.GetDistanceTo(p1) < MeshTol.Crossing || ip.GetDistanceTo(p2) < 0.5
+                || ip.GetDistanceTo(p3) < MeshTol.Crossing || ip.GetDistanceTo(p4) < MeshTol.Crossing) return false;
+            return true;
+        }
+
+        // Разрезание всех отрезков в точках их взаимных Х-пересечений: планарный
+        // граф строится по общим узлам, и пересечение без узла делает грань,
+        // накрывающую чужие линии. Поиск пар — через пространственную сетку по
+        // серединам отрезков, чтобы не перебирать все пары на больших планах.
+        private List<Point2d[]> SplitSegmentsAtIntersections(List<Point2d[]> segments, out int crossings)
+        {
+            crossings = 0;
+            int n = segments.Count;
+            double maxLen = 1.0;
+            var mids = new Point2d[n];
+            var halfLen = new double[n];
+            for (int i = 0; i < n; i++)
+            {
+                double len = segments[i][0].GetDistanceTo(segments[i][1]);
+                if (len > maxLen) maxLen = len;
+                mids[i] = new Point2d((segments[i][0].X + segments[i][1].X) / 2.0,
+                                      (segments[i][0].Y + segments[i][1].Y) / 2.0);
+                halfLen[i] = len / 2.0;
+            }
+
+            var grid = new SpatialGrid(maxLen);
+            for (int i = 0; i < n; i++) grid.Add(i, mids[i]);
+
+            var cuts = new List<double>[n];
+            for (int i = 0; i < n; i++)
+            {
+                foreach (int j in grid.QueryRadius(mids[i], halfLen[i] + maxLen / 2.0 + 1.0))
+                {
+                    if (j <= i) continue;
+                    if (!SegmentCrossingPoint(segments[i][0], segments[i][1], segments[j][0], segments[j][1], out Point2d ip))
+                        continue;
+
+                    crossings++;
+                    double li = segments[i][0].GetDistanceTo(segments[i][1]);
+                    double lj = segments[j][0].GetDistanceTo(segments[j][1]);
+                    if (cuts[i] == null) cuts[i] = new List<double>();
+                    if (cuts[j] == null) cuts[j] = new List<double>();
+                    cuts[i].Add(segments[i][0].GetDistanceTo(ip) / li);
+                    cuts[j].Add(segments[j][0].GetDistanceTo(ip) / lj);
+                }
+            }
+
+            var result = new List<Point2d[]>();
+            for (int i = 0; i < n; i++)
+            {
+                if (cuts[i] == null) { result.Add(segments[i]); continue; }
+                cuts[i].Sort();
+                Point2d a = segments[i][0], b = segments[i][1];
+                Point2d prev = a;
+                foreach (double t in cuts[i])
+                {
+                    Point2d p = new Point2d(a.X + (b.X - a.X) * t, a.Y + (b.Y - a.Y) * t);
+                    if (prev.GetDistanceTo(p) > MeshTol.Crossing) { result.Add(new Point2d[] { prev, p }); prev = p; }
+                }
+                if (prev.GetDistanceTo(b) > MeshTol.Crossing) result.Add(new Point2d[] { prev, b });
+            }
+            return result;
+        }
+
     }
 }

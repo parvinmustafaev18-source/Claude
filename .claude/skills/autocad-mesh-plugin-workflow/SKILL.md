@@ -1,6 +1,6 @@
 ---
 name: autocad-mesh-plugin-workflow
-description: AutoCAD .NET-плагин MeshPlugin (partial class Commands), строящий регулярную квадратную КЭ-сетку по контуру плиты с учётом стен, пилонов, проёмов и отверстий. Используй при любой правке Commands.cs, QuadMesh.cs, Geometry.cs, Quality.cs, SpatialGrid.cs; при вопросах о командах MESH* (MESHLAYERS, MESHWALLS, MESHDOORS, MESHWALLAXIS, MESHWALLJOIN, MESHCLEAN, MESHCOLUMNSBAR, MESHCOLUMNCROSS, MESHQUADMESH, MESHQUALITY); о слоях FOUNDATION_SLABS/WALLS/COLUMNS/WALL_DOORS/MESH_*/ПРОБЛЕМА/ПЛОХИЕ и их именовании; об алгоритмах сетки (Sutherland-Hodgman, ear-clipping, edgeMap-сращивание, снап стен и дверей, пилоны-оси); о качестве элементов (мозаика α). Для формата .txt экспорта в ЛИРА-САПР — skill lira-sapr-mesh-export.
+description: AutoCAD .NET-плагин MeshPlugin (partial class Commands), строящий регулярную квадратную КЭ-сетку по контуру плиты с учётом стен, пилонов, проёмов и отверстий. Используй при любой правке Commands.cs, QuadMesh.cs, Geometry.cs, MeshCore.cs, SpatialGrid.cs; при вопросах о командах MESH* (MESHLAYERS, MESHWALLS, MESHDOORS, MESHWALLAXIS, MESHWALLJOIN, MESHCOLUMNCROSS, MESHQUADMESH, MESHCHECK, MESHEXPORTTXT); о слоях FOUNDATION_SLABS/WALLS/COLUMNS/WALL_DOORS/MESH_*/ПРОБЛЕМА/ПЛОХИЕ и их именовании; об алгоритмах сетки (Sutherland-Hodgman, ear-clipping, edgeMap-сращивание, снап стен и дверей, пилоны-оси); о качестве элементов (α). Для формата .txt экспорта в ЛИРА-САПР — skill lira-sapr-mesh-export.
 ---
 
 # MeshPlugin — КЭ-сетка в AutoCAD
@@ -31,10 +31,12 @@ description: AutoCAD .NET-плагин MeshPlugin (partial class Commands), ст
 ## Порядок команд на плане
 
 `MESHLAYERS` → `MESHWALLAXIS` и/или `MESHWALLS` → `MESHDOORS` →
-`MESHCOLUMNCROSS` (основной режим пилонов; `MESHCOLUMNSBAR` — старый, стержень
-КЭ 10) → при нужде `MESHWALLJOIN`, `MESHCLEAN` → `MESHCHECK` (проверка входа) →
-`MESHQUADMESH` → при нужде `MESHQUALITY` → `MESHEXPORTTXT`
+`MESHCOLUMNCROSS` (пилоны) → при нужде `MESHWALLJOIN` → `MESHCHECK`
+(проверка входа) → `MESHQUADMESH` → `MESHEXPORTTXT`
 (skill `lira-sapr-mesh-export`).
+
+Команд `MESHCLEAN`, `MESHCOLUMNSBAR` и `MESHQUALITY` больше нет — убраны
+23.08.2026 как довесок (см. references/commands.md).
 
 Порядок не формальность: каждая следующая команда читает слои, созданные
 предыдущими. Сетка строится по тому, что уже разложено по слоям, — поэтому

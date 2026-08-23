@@ -110,7 +110,7 @@ namespace MeshPlugin
 
         // Дверные проёмы: WALL_DOORS(H-<высота>). Проверка намеренно широкая (без
         // "H-"): слой без высоты всё равно обязан считаться дверным и защищаться от
-        // MESHLAYERS/MESHCLEAN, а высота при разборе имени получает значение по
+        // MESHLAYERS, а высота при разборе имени получает значение по
         // умолчанию.
         private const string DoorLayerPrefix = "WALL_DOORS(";
 
@@ -135,7 +135,7 @@ namespace MeshPlugin
         private const string DoorMarkLayerName = "WALL_DOORS_MARKS";
         private const double DoorMarkSize = 200.0;
 
-        // Маркеры плагина: MESH_ANGLE_MARKS, MESH_GAP_MARKS, MESH_QUALITY_*.
+        // Маркеры плагина: MESH_ANGLE_MARKS, MESH_GAP_MARKS.
         private const string MarkLayerPrefix = "MESH_";
 
         private const string AngleMarkLayerName = "MESH_ANGLE_MARKS";
@@ -150,10 +150,8 @@ namespace MeshPlugin
         private const string ProblemLayerName = "ПРОБЛЕМА";
         private const double ProblemMarkRadius = 300.0;
 
-        // Мозаика качества и контуры критических элементов (MESHQUALITY).
-        private const string QualityGoodLayerName = "MESH_QUALITY_GOOD"; // зелёный
-        private const string QualityMidLayerName = "MESH_QUALITY_MID";   // жёлтый
-        private const string QualityBadLayerName = "MESH_QUALITY_BAD";   // красный
+        // Слой критических элементов, оставшийся от убранной команды MESHQUALITY:
+        // на старых чертежах он ещё лежит, поэтому MESHQUADMESH его вычищает.
         private const string BadElementsLayerName = "ПЛОХИЕ";
 
         // Стена (в том числе ось пилона).
@@ -193,8 +191,8 @@ namespace MeshPlugin
         }
 
         // Служебные слои плагина: объекты, созданные его же командами, не являются
-        // исходными контурами для новых построений (MESHCLEAN их сохраняет,
-        // MESHWALLAXIS не принимает за контуры стен).
+        // исходными контурами для новых построений (MESHWALLAXIS не принимает
+        // их за контуры стен).
         private static bool IsServiceLayer(string layer)
         {
             if (string.IsNullOrEmpty(layer)) return false;

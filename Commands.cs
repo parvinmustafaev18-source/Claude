@@ -373,83 +373,6 @@ namespace MeshPlugin
             }
         }
 
-        // Зачистка чертежа: удаляет из текущего пространства все объекты вне служебных
-        // слоёв плагина (FOUNDATION_SLABS, WALLS(H-...), COLUMNS, LINE_TRIANGULATION) —
-        // исходную подоснову, контуры стен и прочий мусор. Перед удалением показывает
-        // количество и просит подтверждение; одно Ctrl+Z отменяет всю зачистку.
-        [CommandMethod("MESHCLEAN")]
-        public void CleanDrawingCommand()
-        {
-            Document doc = Application.DocumentManager.MdiActiveDocument;
-            Editor ed = doc.Editor;
-            EchoCommandStart(ed, "MESHCLEAN");
-            Database db = doc.Database;
-
-            try
-            {
-            using (Transaction tr = db.TransactionManager.StartTransaction())
-            {
-                // Заблокированные слои: объекты в них удалить нельзя — пропускаются
-                var lockedLayers = new HashSet<string>();
-                LayerTable lt = (LayerTable)tr.GetObject(db.LayerTableId, OpenMode.ForRead);
-                foreach (ObjectId lid in lt)
-                {
-                    LayerTableRecord ltr = (LayerTableRecord)tr.GetObject(lid, OpenMode.ForRead);
-                    if (ltr.IsLocked) lockedLayers.Add(ltr.Name);
-                }
-
-                var toErase = new List<ObjectId>();
-                int skippedLocked = 0;
-
-                BlockTableRecord btr = (BlockTableRecord)tr.GetObject(db.CurrentSpaceId, OpenMode.ForRead);
-                foreach (ObjectId id in btr)
-                {
-                    Entity ent = tr.GetObject(id, OpenMode.ForRead) as Entity;
-                    if (ent == null) continue;
-                    if (IsServiceLayer(ent.Layer)) continue;
-                    if (lockedLayers.Contains(ent.Layer)) { skippedLocked++; continue; }
-                    toErase.Add(id);
-                }
-
-                if (toErase.Count == 0)
-                {
-                    ed.WriteMessage("\nУдалять нечего: вне служебных слоёв объектов нет" +
-                        (skippedLocked > 0 ? $" (в заблокированных слоях пропущено: {skippedLocked})" : "") + ".\n");
-                    return;
-                }
-
-                PromptKeywordOptions pko = new PromptKeywordOptions(
-                    $"\nБудет удалено объектов вне служебных слоёв: {toErase.Count}. Удалить?");
-                pko.Keywords.Add("Yes");
-                pko.Keywords.Add("No");
-                pko.Keywords.Default = "No";
-                PromptResult pr = ed.GetKeywords(pko);
-                bool confirmed = pr.Status == PromptStatus.OK && pr.StringResult == "Yes";
-                if (!confirmed)
-                {
-                    ed.WriteMessage("\nЗачистка отменена.\n");
-                    return;
-                }
-
-                foreach (ObjectId id in toErase)
-                {
-                    Entity ent = (Entity)tr.GetObject(id, OpenMode.ForWrite);
-                    ent.Erase();
-                }
-
-                ed.WriteMessage($"\nУдалено объектов: {toErase.Count}" +
-                    (skippedLocked > 0 ? $", пропущено в заблокированных слоях: {skippedLocked}" : "") +
-                    ". Отмена — Ctrl+Z.\n");
-
-                tr.Commit();
-            }
-            }
-            catch (System.Exception ex)
-            {
-                ed.WriteMessage($"\nОшибка MESHCLEAN: {ex.Message}\nИзменения команды отменены.\n");
-            }
-        }
-
         // Дотягивание осей стен друг до друга (ручной режим): пользователь выбирает
         // отрезки, программа сама решает — непараллельные продлить до точки пересечения
         // (только удлинение, укорачивания нет), коллинеарные из одного слоя слить в один
@@ -638,86 +561,6 @@ namespace MeshPlugin
             }
         }
 
-        // СТАРЫЙ режим пилонов (стержень КЭ 10 при экспорте): контур в слой
-        // COLUMNS(SEC-...) + точка центра, внутренность пуста. Оставлен как
-        // запасной вариант; основной путь теперь MESHCOLUMNCROSS — пилон
-        // крестом пластин-стен.
-        [CommandMethod("MESHCOLUMNSBAR")]
-        public void CreateColumnsLayerCommand()
-        {
-            Document doc = Application.DocumentManager.MdiActiveDocument;
-            Editor ed = doc.Editor;
-            EchoCommandStart(ed, "MESHCOLUMNSBAR");
-            Database db = doc.Database;
-
-            PromptSelectionOptions pso = new PromptSelectionOptions();
-            pso.MessageForAdding = "\nВыберите пилоны (замкнутые полилинии): ";
-            SelectionFilter filter = new SelectionFilter(new TypedValue[] { new TypedValue((int)DxfCode.Start, "LWPOLYLINE") });
-            PromptSelectionResult psr = ed.GetSelection(pso, filter);
-            if (psr.Status != PromptStatus.OK)
-            {
-                ed.WriteMessage("\nВыбор отменён.\n");
-                return;
-            }
-
-            var rnd = new Random();
-
-            try
-            {
-            using (Transaction tr = db.TransactionManager.StartTransaction())
-            {
-                var usedColors = GetUsedLayerColors(db, tr);
-
-                // Слой на каждый типоразмер сечения (по габаритам bbox), цвета — из
-                // палитры далеко разнесённых оттенков, без повторов с уже существующими.
-                var sizeLayers = new Dictionary<string, string>();
-
-                int columnCount = 0, skippedOpen = 0;
-
-                BlockTableRecord ms = (BlockTableRecord)tr.GetObject(db.CurrentSpaceId, OpenMode.ForWrite);
-
-                foreach (SelectedObject so in psr.Value)
-                {
-                    Polyline pl = tr.GetObject(so.ObjectId, OpenMode.ForWrite) as Polyline;
-                    if (pl == null) continue;
-
-                    if (!pl.Closed)
-                    {
-                        skippedOpen++;
-                        continue;
-                    }
-
-                    string layerName = ColumnLayerNameFor(pl);
-                    if (!sizeLayers.ContainsKey(layerName))
-                    {
-                        EnsureLayer(db, tr, layerName, PickRandomColor(rnd, usedColors));
-                        sizeLayers[layerName] = layerName;
-                    }
-
-                    pl.Layer = layerName;
-                    columnCount++;
-
-                    // Узел в центре сечения пилона — элемент POINT в том же слое
-                    Point2d c = PolygonCentroid(GetPolylineVertices(pl));
-                    DBPoint centerPt = new DBPoint(new Point3d(c.X, c.Y, 0));
-                    centerPt.Layer = layerName;
-                    ms.AppendEntity(centerPt);
-                    tr.AddNewlyCreatedDBObject(centerPt, true);
-                }
-
-                ed.WriteMessage($"\nПилоны: {columnCount} (+точки центров), типоразмеров/слоёв: {sizeLayers.Count}, пропущено незамкнутых: {skippedOpen}\n");
-                foreach (var ln in sizeLayers.Keys)
-                    ed.WriteMessage($"  {ln}\n");
-
-                tr.Commit();
-            }
-            }
-            catch (System.Exception ex)
-            {
-                ed.WriteMessage($"\nОшибка MESHCOLUMNSBAR: {ex.Message}\nИзменения команды отменены.\n");
-            }
-        }
-
         // ОСНОВНОЙ режим пилонов: пилон моделируется ОДНОЙ осевой линией-пластиной.
         // Из прямоугольного контура строится единственная ось — вдоль ДЛИННОЙ стороны,
         // с толщиной, равной короткой стороне, — в слое WALLS(H-<толщина> PILON).
@@ -728,7 +571,7 @@ namespace MeshPlugin
         // PILON (см. GetPylonCrossConstraints), поэтому вторую линию рисовать не нужно.
         // Суффикс PILON отличает пилоны от обычных стен. Исходный контур и старые точки
         // центров (COLUMNS) удаляются. Габариты — по bbox: контур должен быть
-        // прямоугольником без поворота, как и в MESHCOLUMNSBAR.
+        // прямоугольником без поворота.
         [CommandMethod("MESHCOLUMNCROSS")]
         public void CreateColumnCrossCommand()
         {
@@ -758,7 +601,8 @@ namespace MeshPlugin
 
                 BlockTableRecord ms = (BlockTableRecord)tr.GetObject(db.CurrentSpaceId, OpenMode.ForWrite);
 
-                // Точки центров от старых запусков MESHCOLUMNSBAR: точка в COLUMNS —
+                // Точки центров от старых чертежей (прежний режим пилона-стержня,
+                // команда MESHCOLUMNSBAR убрана): точка в COLUMNS —
                 // триггер стержня КЭ 10 при экспорте, у крестового пилона её быть
                 // не должно. Собираются заранее, удаляются попавшие в габарит пилона.
                 var oldPts = new List<KeyValuePair<ObjectId, Point2d>>();
@@ -845,8 +689,8 @@ namespace MeshPlugin
                     tr.AddNewlyCreatedDBObject(lx, true);
 
                     // Контур НЕ стирается: MESHQUADMESH отпечатывает его на сетке плиты
-                    // (узлы в углах, мелкая сетка внутри). Слой служебный — MESHCLEAN его
-                    // сохраняет, MESHLAYERS не уводит, MESHWALLAXIS не считает стеной.
+                    // (узлы в углах, мелкая сетка внутри). Слой служебный: MESHLAYERS
+                    // его не уводит, MESHWALLAXIS не считает стеной.
                     EnsureLayer(db, tr, PylonOutlineLayerName, 8); // тёмно-серый
                     pl.Layer = PylonOutlineLayerName;
                     crossCount++;
@@ -1077,20 +921,6 @@ namespace MeshPlugin
         }
 
         // Имена слоёв и проверки IsColumnLayer/IsServiceLayer — в Defs.cs.
-
-        private string ColumnLayerNameFor(Polyline pl)
-        {
-            double minX = double.MaxValue, minY = double.MaxValue;
-            double maxX = double.MinValue, maxY = double.MinValue;
-            foreach (var p in GetPolylineVertices(pl))
-            {
-                if (p.X < minX) minX = p.X;
-                if (p.X > maxX) maxX = p.X;
-                if (p.Y < minY) minY = p.Y;
-                if (p.Y > maxY) maxY = p.Y;
-            }
-            return $"COLUMNS(SEC-RC_RECT B-{maxX - minX:0.###} H-{maxY - minY:0.###})";
-        }
 
         // Разбивает замкнутые полилинии-контуры пилонов (слой COLUMNS) на отдельные
         // отрезки в слое линий триангуляции; исходная полилиния удаляется.

@@ -9,11 +9,11 @@
 | Слой | Кто создаёт | Кто читает | Что означает |
 |---|---|---|---|
 | `FOUNDATION_SLABS(H-<t>)` | MESHLAYERS | контур выбирается вручную | плита толщиной t мм |
-| `LINE_TRIANGULATION` | MESHLAYERS, MESHQUADMESH, ExplodeColumnContours | MESHQUALITY, экспорт | линии сетки |
-| `WALLS(H-<t>)` | MESHWALLS, MESHWALLAXIS | `GetWallSegments`, `SnapWallsToGrid`, MESHQUALITY, экспорт | ось стены, пластина толщиной t |
+| `LINE_TRIANGULATION` | MESHLAYERS, MESHQUADMESH, ExplodeColumnContours | экспорт | линии сетки |
+| `WALLS(H-<t>)` | MESHWALLS, MESHWALLAXIS | `GetWallSegments`, `SnapWallsToGrid`, экспорт | ось стены, пластина толщиной t |
 | `WALLS(H-<t> PILON)` | MESHCOLUMNCROSS | то же + `GetPylonCrossConstraints`, `GetPylonAxisTargets` | ось пилона; **не снапится** |
-| `COLUMNS(SEC-RC_RECT B-<b> H-<h>)` | MESHCOLUMNSBAR | `GetColumnPolygons`, `SnapColumnsToGrid` | сечение пилона (старый режим) |
-| `COLUMNS*` + DBPoint | MESHCOLUMNSBAR | экспорт, MESHQUALITY | центр пилона → стержень КЭ 10 |
+| `COLUMNS(SEC-RC_RECT B-<b> H-<h>)` | — (только старые чертежи) | `GetColumnPolygons`, `SnapColumnsToGrid` | сечение пилона (прежний режим) |
+| `COLUMNS*` + DBPoint | — (только старые чертежи) | экспорт | центр пилона → стержень КЭ 10 |
 | `WALL_DOORS(H-<h>)` | MESHDOORS | `GetDoorEndpoints`, `GetDoorJambConstraints`, `SnapDoorsToGrid`, экспорт | дверной проём высотой h |
 | `WALL_DOORS_MARKS` | MESHDOORS | только чертёж | квадрат 200×200, в ЛИРУ не идёт |
 | `MESH_HOLES` | MESHQUADMESH (`MovePolylinesToHoleLayer`) | `GetHolePolygons`, экспорт | отверстие/проём в плите |
@@ -21,12 +21,11 @@
 | `MESH_ANGLE_MARKS` | `ValidateContour` | — | углы контура ≠ 90°, круги R300 |
 | `MESH_GAP_MARKS` | `ValidateContour` | — | разрыв незамкнутого контура, круги R150 |
 | `ПРОБЛЕМА` | MESHQUADMESH, MESHEXPORTTXT | — | места, где сетка не построилась, R300 |
-| `MESH_QUALITY_GOOD/MID/BAD` | MESHQUALITY | — | мозаика α (зелёный/жёлтый/красный) |
-| `ПЛОХИЕ` | MESHQUALITY, MESHQUADMESH (чистит) | — | контуры элементов α < 0.3 |
+| `ПЛОХИЕ` | — (наследие MESHQUALITY), MESHQUADMESH чистит | — | контуры элементов α < 0.3 на старых чертежах |
 
 Константы имён: Commands.cs:1097–1109 (`ColumnLayerName`,
 `TriangulationLayerName`, `HoleLayerName`, `DoorMarkLayerName`, `DoorMarkSize`),
-Commands.cs:972–982 (маркерные слои и радиусы), Quality.cs:15–26.
+Commands.cs:972–982 (маркерные слои и радиусы).
 
 ## Правила распознавания
 
@@ -45,7 +44,7 @@ Commands.cs:972–982 (маркерные слои и радиусы), Quality.c
 - `IsServiceLayer` — созданное самим плагином: плита, стены, двери,
   `WALL_DOORS_MARKS`, `LINE_TRIANGULATION`, `MESH_HOLES`, `MESH_PYLONS`,
   `COLUMNS*`.
-  Используется в MESHCLEAN (что не удалять), MESHWALLAXIS (что не принимать за
+  Используется в MESHWALLAXIS (что не принимать за
   контур стены), `MovePolylinesToHoleLayer` (что не превращать в отверстие).
 - `KeepLayer` внутри MESHLAYERS — **шире** `IsServiceLayer`: плюс `IsMarkLayer`
   (`MESH_*`, `ПРОБЛЕМА`, `ПЛОХИЕ`). Списки разные намеренно: MESHLAYERS
@@ -67,12 +66,11 @@ Commands.cs:972–982 (маркерные слои и радиусы), Quality.c
 палитры `{1,2,3,4,5,6,30,50,90,140,200,220}` цвет, не занятый ни одним слоем
 чертежа (`GetUsedLayerColors`, Commands.cs:1367); при исчерпании — первый
 свободный ACI, кроме 7 (белый). Фиксированные цвета: двери 30 (оранжевый),
-отверстия 6 (сиреневый), маркеры 1 (красный), `ПЛОХИЕ` 7 (белый), мозаика
-3/2/1.
+отверстия 6 (сиреневый), маркеры 1 (красный).
 
 ## Добавляешь новый слой
 
 1. Константа и функция-проверка — в `Defs.cs`, рядом с остальными.
-2. Внести в `IsServiceLayer` и/или `KeepLayer` — иначе MESHCLEAN его сотрёт, а
-   MESHLAYERS перекрасит объекты.
+2. Внести в `IsServiceLayer` и/или `KeepLayer` — иначе MESHLAYERS перекрасит
+   объекты, а MESHWALLAXIS примет их за контуры стен.
 3. Дописать строку в таблицу выше.
