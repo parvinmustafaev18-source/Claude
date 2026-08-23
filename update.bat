@@ -22,6 +22,16 @@ if errorlevel 1 (
     goto :fail
 )
 
+rem --- 0. Подпись коммитов: на новой машине её обычно нет, без неё git
+rem      отказывается коммитить с невнятной ошибкой по-английски.
+git config user.email >nul 2>nul
+if errorlevel 1 (
+    echo Подпись коммитов не задана - ставлю ту же, что на других компьютерах.
+    git config --global user.name "parvinmustafaev18-source"
+    git config --global user.email "parvinmustafaev18-source@users.noreply.github.com"
+    echo.
+)
+
 rem --- 1. AutoCAD должен быть закрыт: иначе он держит старую DLL ---
 tasklist /FI "IMAGENAME eq acad.exe" 2>nul | find /I "acad.exe" >nul
 if not errorlevel 1 (
