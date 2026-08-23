@@ -103,6 +103,8 @@ namespace MeshPlugin
             ed.WriteMessage($"\nПрогон {count} планов, номера {firstSeed}–{firstSeed + count - 1}. Чертёж не изменяется.\n");
 
             var failures = new List<string>();
+            int exportFailures = 0;      // планов, где схема ЛИРЫ не сошлась
+            int unusedNodes = 0;         // узлы без элементов: их убирает Упаковка схемы
             int shortEdgeCases = 0;      // не провал: у пилона тоньше 200 мм это норма
             int rotationChecked = 0, rotationSame = 0;
             var sw = Stopwatch.StartNew();
@@ -117,9 +119,23 @@ namespace MeshPlugin
                 try
                 {
                     plan = MakeTestPlan(seed);
-                    res = BuildMeshCore(PlanToInput(plan, 0.0, 0.0, false));
+                    var meshInput = PlanToInput(plan, 0.0, 0.0, false);
+                    res = BuildMeshCore(meshInput);
                     bad.AddRange(CheckMeshInvariants(res));
                     if (res.ShortEdges > 0) shortEdgeCases++;
+
+                    // Экспорт проверяется на той же сетке: до сих пор он был единственной
+                    // частью плагина, которую самотест не трогал, хотя именно его результат
+                    // и уезжает в ЛИРУ. Сетка не построилась — экспортировать нечего.
+                    if (res.Ok)
+                    {
+                        var exportInput = MeshToExportInput(meshInput, res);
+                        var task = BuildExportCore(exportInput);
+                        var badExport = CheckExportInvariants(exportInput, task);
+                        foreach (var b in badExport) bad.Add("экспорт: " + b);
+                        if (badExport.Count > 0) exportFailures++;
+                        if (task.Ok) unusedNodes += UnusedNodeCount(task);
+                    }
                 }
                 catch (System.Exception ex)
                 {
@@ -180,6 +196,11 @@ namespace MeshPlugin
                 ed.WriteMessage("Посмотреть провалившийся план: команда MESHSELFTESTCASE, ввести его номер — план начертится в текущем чертеже, дальше обычный MESHQUADMESH.\n");
             }
 
+            if (exportFailures > 0)
+                ed.WriteMessage($"Из них с ошибкой экспорта в ЛИРУ: {exportFailures}\n");
+            if (unusedNodes > 0)
+                ed.WriteMessage($"Не провал, к сведению: узлов без элементов (убираются Упаковкой схемы в ЛИРЕ): {unusedNodes}\n");
+
             if (shortEdgeCases > 0)
                 ed.WriteMessage($"Не провал, к сведению: рёбра короче {MeshTol.MinElementSize:0} мм встретились в {shortEdgeCases} планах (обычная причина — пилон тоньше {2 * MeshTol.PylonInnerCell:0} мм).\n");
 
@@ -206,7 +227,8 @@ namespace MeshPlugin
             TestPlan plan = MakeTestPlan(pir.Value);
             ed.WriteMessage($"\nПлан {plan.Seed}: {plan.Describe()}\n");
 
-            var res = BuildMeshCore(PlanToInput(plan, 0.0, 0.0, false));
+            var caseInput = PlanToInput(plan, 0.0, 0.0, false);
+            var res = BuildMeshCore(caseInput);
             // Журнал расчёта печатается целиком: на одном плане важно видеть не
             // вердикт, а на каком этапе конвейера появились лишние числа.
             foreach (var line in res.Log) ed.WriteMessage(line);
@@ -214,6 +236,17 @@ namespace MeshPlugin
             ed.WriteMessage(bad.Count == 0
                 ? "Расчёт по этому плану правил не нарушает.\n"
                 : $"Нарушено: {string.Join("; ", bad)}\n");
+
+            if (res.Ok)
+            {
+                var exportInput = MeshToExportInput(caseInput, res);
+                var task = BuildExportCore(exportInput);
+                foreach (var line in task.Log) ed.WriteMessage(line);
+                var badExport = CheckExportInvariants(exportInput, task);
+                ed.WriteMessage(badExport.Count == 0
+                    ? "Экспорт по этому плану правил не нарушает.\n"
+                    : $"Экспорт нарушает: {string.Join("; ", badExport)}\n");
+            }
 
             try
             {

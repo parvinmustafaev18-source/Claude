@@ -98,6 +98,8 @@
     <Compile Include="Commands.cs" />
     <Compile Include="Defs.cs" />
     <Compile Include="Geometry.cs" />
+    <Compile Include="ExportCore.cs" />
+    <Compile Include="ExportSelfCheck.cs" />
     <Compile Include="LiraExport.cs" />
     <Compile Include="MeshCore.cs" />
     <Compile Include="QuadMesh.cs" />
