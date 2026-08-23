@@ -179,8 +179,13 @@ namespace MeshPlugin
                 };
 
                 // ---- РАСЧЁТ ---------------------------------------------------------
+                // Время расчёта печатается, чтобы ускорения (и замедления) ядра было
+                // видно на реальном чертеже, а не только в самотесте.
+                var meshWatch = System.Diagnostics.Stopwatch.StartNew();
                 var mesh = BuildMeshCore(input);
+                meshWatch.Stop();
                 foreach (var line in mesh.Log) ed.WriteMessage(line);
+                ed.WriteMessage($"\nРасчёт сетки: {meshWatch.Elapsed.TotalSeconds:0.0} с\n");
 
                 if (!mesh.Ok)
                 {

@@ -226,4 +226,119 @@ namespace MeshPlugin
             }
         }
 
+        // Индекс по ГАБАРИТАМ (в отличие от SpatialGrid, который индексирует точки):
+        // отрезок или полигон занимает все бакеты, накрытые его габаритным
+        // прямоугольником. Запрос по габариту ячейки возвращает только тех кандидатов,
+        // чей габарит её задевает, — этого достаточно: при непересекающихся габаритах
+        // невозможны ни пересечение сторон, ни точка внутри.
+        //
+        // Без индекса главный цикл ячеек перебирал ВСЕ линии-ограничители плана на
+        // каждую ячейку, и время построения росло как ячейки × объекты.
+        //
+        // Кандидаты возвращаются по возрастанию индекса, то есть в исходном порядке
+        // списка. Это обязательно: ячейка режется последовательно по каждой стене, и
+        // перестановка стен даёт другую форму кусков, то есть другую сетку.
+        internal class BboxIndex
+        {
+            private readonly double cellSize;
+            private readonly Dictionary<long, List<int>> buckets =
+                new Dictionary<long, List<int>>();
+
+            // Объект, габарит которого накрывает слишком много бакетов (косая линия
+            // через весь план), в бакеты не раскладывается: это дороже, чем проверять
+            // его на каждый запрос. Такие идут в ответ всегда.
+            private const int MaxBucketsPerItem = 1024;
+            private readonly List<int> oversized = new List<int>();
+
+            // Буфер ответа общий: содержимое живёт до следующего запроса.
+            private readonly List<int> hits = new List<int>();
+            private readonly HashSet<int> seen = new HashSet<int>();
+
+            public BboxIndex(double cellSize)
+            {
+                this.cellSize = cellSize > 1e-9 ? cellSize : 1.0;
+            }
+
+            private static long Key(int cx, int cy)
+            {
+                return ((long)cx << 32) | (uint)cy;
+            }
+
+            private int CellOf(double v)
+            {
+                return (int)Math.Floor(v / cellSize);
+            }
+
+            public void Add(int index, double minX, double minY, double maxX, double maxY)
+            {
+                int cx0 = CellOf(minX), cx1 = CellOf(maxX);
+                int cy0 = CellOf(minY), cy1 = CellOf(maxY);
+
+                long cells = ((long)(cx1 - cx0) + 1) * ((long)(cy1 - cy0) + 1);
+                if (cells > MaxBucketsPerItem) { oversized.Add(index); return; }
+
+                for (int cx = cx0; cx <= cx1; cx++)
+                {
+                    for (int cy = cy0; cy <= cy1; cy++)
+                    {
+                        long key = Key(cx, cy);
+                        List<int> list;
+                        if (!buckets.TryGetValue(key, out list))
+                        {
+                            list = new List<int>();
+                            buckets[key] = list;
+                        }
+                        list.Add(index);
+                    }
+                }
+            }
+
+            public void AddSegment(int index, Point2d a, Point2d b)
+            {
+                Add(index,
+                    Math.Min(a.X, b.X), Math.Min(a.Y, b.Y),
+                    Math.Max(a.X, b.X), Math.Max(a.Y, b.Y));
+            }
+
+            public void AddPolygon(int index, IList<Point2d> poly)
+            {
+                double x0 = double.MaxValue, y0 = double.MaxValue;
+                double x1 = double.MinValue, y1 = double.MinValue;
+                foreach (var p in poly)
+                {
+                    if (p.X < x0) x0 = p.X;
+                    if (p.X > x1) x1 = p.X;
+                    if (p.Y < y0) y0 = p.Y;
+                    if (p.Y > y1) y1 = p.Y;
+                }
+                Add(index, x0, y0, x1, y1);
+            }
+
+            public List<int> Query(double minX, double minY, double maxX, double maxY)
+            {
+                hits.Clear();
+                seen.Clear();
+
+                int cx0 = CellOf(minX), cx1 = CellOf(maxX);
+                int cy0 = CellOf(minY), cy1 = CellOf(maxY);
+
+                for (int cx = cx0; cx <= cx1; cx++)
+                {
+                    for (int cy = cy0; cy <= cy1; cy++)
+                    {
+                        List<int> list;
+                        if (!buckets.TryGetValue(Key(cx, cy), out list)) continue;
+                        foreach (int idx in list)
+                            if (seen.Add(idx)) hits.Add(idx);
+                    }
+                }
+
+                foreach (int idx in oversized)
+                    if (seen.Add(idx)) hits.Add(idx);
+
+                hits.Sort();
+                return hits;
+            }
+        }
+
 }

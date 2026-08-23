@@ -297,6 +297,37 @@ namespace MeshPlugin
             if (doorJambs.Count > 0)
                 res.Log.Add($"\nКосяков дверных проёмов врезано в сетку: {doorJambs.Count}\n");
 
+            // ---- ИНДЕКСЫ ПО ГАБАРИТАМ ------------------------------------------
+            // Дальше каждая ячейка спрашивает только те стены, пилоны и отверстия,
+            // чей габарит её задевает. Раньше на каждую ячейку перебирался весь план,
+            // и время построения росло как ячейки × объекты. Результат тот же: объект
+            // с непересекающимся габаритом ни одну из проверок пройти не мог.
+            // Запас IndexMargin с большим запасом покрывает допуски проверок
+            // (MeshTol.OnSegment = 1e-3 мм).
+            const double IndexMargin = 1.0;
+            double indexBin = Math.Max(cellSize, 1.0);
+
+            var constraintIndex = new BboxIndex(indexBin);
+            for (int i = 0; i < splitConstraints.Count; i++)
+                constraintIndex.AddSegment(i, splitConstraints[i][0], splitConstraints[i][1]);
+
+            var columnIndex = new BboxIndex(indexBin);
+            for (int i = 0; i < columnPolys.Count; i++) columnIndex.AddPolygon(i, columnPolys[i]);
+
+            var holeIndex = new BboxIndex(indexBin);
+            for (int i = 0; i < holePolys.Count; i++) holeIndex.AddPolygon(i, holePolys[i]);
+
+            var pylonIndex = new BboxIndex(indexBin);
+            for (int i = 0; i < pylonRects.Count; i++) pylonIndex.AddPolygon(i, pylonRects[i]);
+
+            // Буферы кандидатов переиспользуются: свой список на каждую ячейку — это
+            // десятки тысяч лишних объектов для сборщика мусора.
+            var nearWalls = new List<Point2d[]>();
+            var nearColumns = new List<List<Point2d>>();
+            var nearHoles = new List<List<Point2d>>();
+            var nearPylons = new List<List<Point2d>>();
+            var queryBox = new double[4];
+
             for (int xi = 0; xi + 1 < xs.Count; xi++)
             {
                 for (int yi = 0; yi + 1 < ys.Count; yi++)
@@ -309,13 +340,19 @@ namespace MeshPlugin
                         new Point2d(xs[xi], ys[yi + 1])
                     };
 
-                    if (CellInsideAnyColumn(cell, columnPolys))
+                    FillQueryBox(cell, IndexMargin, queryBox);
+                    CollectSegments(constraintIndex, splitConstraints, queryBox, nearWalls);
+                    CollectPolygons(columnIndex, columnPolys, queryBox, nearColumns);
+                    CollectPolygons(holeIndex, holePolys, queryBox, nearHoles);
+                    CollectPolygons(pylonIndex, pylonRects, queryBox, nearPylons);
+
+                    if (CellInsideAnyColumn(cell, nearColumns))
                     {
                         continue; // внутри пилона-стержня (COLUMNS) сетки плиты нет
                     }
 
-                    if (pylonRects.Count > 0 && !CellInsideAnyRect(cell, pylonRects)
-                        && CellOverlapsAnyRect(cell, pylonRects))
+                    if (nearPylons.Count > 0 && !CellInsideAnyRect(cell, nearPylons)
+                        && CellOverlapsAnyRect(cell, nearPylons))
                     {
                         // Ячейка задета отпечатком с краю. Режем её ПРЯМОУГОЛЬНОЙ
                         // РАЗНОСТЬЮ, а не полуплоскостями по граням: полуплоскость
@@ -323,16 +360,17 @@ namespace MeshPlugin
                         // чего вокруг пилона появлялись длинные косые рёбра и вееры
                         // треугольников. Разность даёт до четырёх прямоугольников,
                         // каждый из которых идёт по обычному пути классификации.
-                        foreach (var sub in SubtractRects(cell, pylonRects))
+                        foreach (var sub in SubtractRects(cell, nearPylons))
                         {
-                            if (CellTouchesWalls(sub, splitConstraints)) wallCells.Add(sub);
+                            // sub лежит внутри ячейки, поэтому её список кандидатов годится.
+                            if (CellTouchesWalls(sub, nearWalls)) wallCells.Add(sub);
                             else if (IsCellFullyInside(sub, contourPts)) quadCells.Add(sub);
                             else boundaryCells.Add(sub);
                         }
                         continue;
                     }
 
-                    if (CellInsideAnyRect(cell, pylonRects))
+                    if (CellInsideAnyRect(cell, nearPylons))
                     {
                         // Ячейка целиком накрыта отпечатком пилона — её место
                         // займут мелкие ячейки, построенные ниже по граням пилона.
@@ -345,7 +383,7 @@ namespace MeshPlugin
                         continue;
                     }
 
-                    if (CellCenterInsideAnyColumn(cell, holePolys))
+                    if (CellCenterInsideAnyColumn(cell, nearHoles))
                     {
                         // Внутри проёма сетки нет вообще. Проверяем по ЦЕНТРУ ячейки,
                         // а НЕ по всем углам: у ячейки, чья внешняя грань лежит ровно
@@ -356,7 +394,7 @@ namespace MeshPlugin
                         continue;
                     }
 
-                    if (CellTouchesWalls(cell, splitConstraints))
+                    if (CellTouchesWalls(cell, nearWalls))
                     {
                         wallCells.Add(cell);
                     }
@@ -462,15 +500,23 @@ namespace MeshPlugin
                 if (clipped.Count < 3) continue;
                 if (Math.Abs(PolygonArea(clipped)) < MeshTol.MinArea) continue;
 
-                foreach (var piece in SplitPolygonByWalls(clipped, splitConstraints))
+                // Кандидаты берутся по габариту обрезанной ячейки: куски разреза
+                // лежат внутри неё, значит список годится и для них.
+                FillQueryBox(clipped, IndexMargin, queryBox);
+                CollectSegments(constraintIndex, splitConstraints, queryBox, nearWalls);
+                CollectPolygons(columnIndex, columnPolys, queryBox, nearColumns);
+                CollectPolygons(holeIndex, holePolys, queryBox, nearHoles);
+                CollectPolygons(pylonIndex, pylonRects, queryBox, nearPylons);
+
+                foreach (var piece in SplitPolygonByWalls(clipped, nearWalls))
                 {
                     if (piece.Count < 3) continue;
                     if (Math.Abs(PolygonArea(piece)) < MeshTol.MinArea) continue;
-                    if (PieceInsideAnyColumn(piece, columnPolys)) continue;
-                    if (PieceInsideAnyColumn(piece, holePolys)) continue;
+                    if (PieceInsideAnyColumn(piece, nearColumns)) continue;
+                    if (PieceInsideAnyColumn(piece, nearHoles)) continue;
                     // Кусок ячейки, отрезанный гранью отпечатка внутрь пилона:
                     // там уже лежит своя мелкая сетка.
-                    if (PieceInsideAnyColumn(piece, pylonRects)) continue;
+                    if (PieceInsideAnyColumn(piece, nearPylons)) continue;
 
                     if (piece.Count == 4 && IsConvexQuad(piece.ToArray()))
                     {
@@ -521,6 +567,12 @@ namespace MeshPlugin
                 }
             }
 
+            // Тот же индекс по габаритам для линий, запрещающих объединение:
+            // проверяется одна точка (середина ребра), поэтому запрос точечный.
+            var blockerIndex = new BboxIndex(indexBin);
+            for (int i = 0; i < mergeBlockers.Count; i++)
+                blockerIndex.AddSegment(i, mergeBlockers[i][0], mergeBlockers[i][1]);
+
             // Жадное объединение пар треугольников в четырёхугольники
             bool[] used = new bool[triVerts.Count];
             var mergedQuads = new List<Point2d[]>();
@@ -553,8 +605,13 @@ namespace MeshPlugin
                         (edgeStart[side].X + edgeEnd[side].X) / 2.0,
                         (edgeStart[side].Y + edgeEnd[side].Y) / 2.0);
                     bool onWall = false;
-                    foreach (var w in mergeBlockers)
+                    foreach (int wi in blockerIndex.Query(
+                        edgeMid.X - IndexMargin, edgeMid.Y - IndexMargin,
+                        edgeMid.X + IndexMargin, edgeMid.Y + IndexMargin))
+                    {
+                        var w = mergeBlockers[wi];
                         if (IsPointOnSegment(edgeMid, w[0], w[1], MeshTol.OnSegment)) { onWall = true; break; }
+                    }
                     if (onWall) continue;
 
                     foreach (int j in edgeMap[keys[side]])
@@ -774,6 +831,45 @@ namespace MeshPlugin
             res.ProblemPts = problemPts;
             res.Ok = true;
             return res;
+        }
+
+        // Габарит ячейки (или её куска), расширенный на запас: с ним идут запросы
+        // к BboxIndex. Массив передаётся снаружи — на десятках тысяч ячеек лишний
+        // double[4] на каждую заметен сборщику мусора.
+        private static void FillQueryBox(IList<Point2d> pts, double margin, double[] box)
+        {
+            double x0 = double.MaxValue, y0 = double.MaxValue;
+            double x1 = double.MinValue, y1 = double.MinValue;
+            foreach (var p in pts)
+            {
+                if (p.X < x0) x0 = p.X;
+                if (p.X > x1) x1 = p.X;
+                if (p.Y < y0) y0 = p.Y;
+                if (p.Y > y1) y1 = p.Y;
+            }
+            box[0] = x0 - margin; box[1] = y0 - margin;
+            box[2] = x1 + margin; box[3] = y1 + margin;
+        }
+
+        // Кандидаты в буфер, в исходном порядке списка (BboxIndex возвращает индексы
+        // по возрастанию). Порядок обязателен: SplitPolygonByWalls режет ячейку
+        // последовательно по каждой стене.
+        private static void CollectSegments(BboxIndex index, List<Point2d[]> all,
+                                            double[] box, List<Point2d[]> buffer)
+        {
+            buffer.Clear();
+            if (all.Count == 0) return;
+            foreach (int i in index.Query(box[0], box[1], box[2], box[3]))
+                buffer.Add(all[i]);
+        }
+
+        private static void CollectPolygons(BboxIndex index, List<List<Point2d>> all,
+                                            double[] box, List<List<Point2d>> buffer)
+        {
+            buffer.Clear();
+            if (all.Count == 0) return;
+            foreach (int i in index.Query(box[0], box[1], box[2], box[3]))
+                buffer.Add(all[i]);
         }
     }
 }
