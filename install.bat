@@ -8,6 +8,8 @@ rem Для компьютера, где плагин только тестируют.
 chcp 866 >nul
 setlocal EnableExtensions
 cd /d "%~dp0"
+rem Ключ /nopause: не ждать нажатия клавиши - так файл зовёт update.bat.
+if /I "%~1"=="/nopause" set "NOPAUSE=1"
 
 set "BUNDLE=%APPDATA%\Autodesk\ApplicationPlugins\MeshPlugin.bundle"
 
@@ -54,7 +56,7 @@ echo Если AutoCAD пишет, что не может загрузить сборку, введите в нём
 echo SECURELOAD со значением 0 - это настройка пользователя, права
 echo администратора для неё не нужны.
 echo.
-pause
+if not defined NOPAUSE pause
 exit /b 0
 
 :copyfail
@@ -66,5 +68,5 @@ goto :fail
 
 :fail
 echo.
-pause
+if not defined NOPAUSE pause
 exit /b 1

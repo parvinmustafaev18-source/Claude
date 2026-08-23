@@ -4,6 +4,8 @@ rem В UTF-8 его пересохранять нельзя - cmd.exe разобьёт кириллицу и файл сломает
 chcp 866 >nul
 setlocal EnableExtensions
 cd /d "%~dp0"
+rem Ключ /nopause: не ждать нажатия клавиши - так файл зовёт update.bat.
+if /I "%~1"=="/nopause" set "NOPAUSE=1"
 
 echo.
 echo ==========================================
@@ -55,7 +57,7 @@ if not defined MSBUILD (
     echo Установите Visual Studio 2022 Community или Build Tools:
     echo https://visualstudio.microsoft.com/downloads/
     echo При установке отметьте "Разработка классических приложений .NET".
-    goto :fail
+    goto :nomsbuild
 )
 
 rem --- 3. Собственно сборка ---
@@ -83,10 +85,16 @@ echo Запустите AutoCAD - плагин загрузится сам.
 echo Проверка: команда MESHHELLO. Каждая команда MESH* печатает время
 echo сборки - оно должно совпасть с указанным выше.
 echo.
-pause
+if not defined NOPAUSE pause
 exit /b 0
+
+:nomsbuild
+echo.
+if not defined NOPAUSE pause
+rem Код 2 = нет Visual Studio. update.bat по нему ставит готовую сборку.
+exit /b 2
 
 :fail
 echo.
-pause
+if not defined NOPAUSE pause
 exit /b 1
