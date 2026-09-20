@@ -154,8 +154,9 @@ namespace MeshPlugin
         // инженеру на экране, а на лист попасть не должен. Высота 250 мм подобрана
         // под масштаб плана в миллиметрах.
         private const string HelpLayerName = "LIRHELP";
-        private const short HelpLayerColor = 8;
-        private const double HelpTextHeight = 250.0;
+        private const short HelpLayerColor = 7;       // белый/чёрный по фону, не блёклый серый
+        private const double HelpTextHeight = 250.0;  // обычный текст
+        private const double HelpCommandHeight = 270.0;  // имена команд — крупнее
         private const string HelpTextStyleName = "ISOCPEUR";
 
         // Слой критических элементов, оставшийся от убранной команды MESHQUALITY:

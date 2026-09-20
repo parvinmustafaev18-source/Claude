@@ -1,4 +1,4 @@
-﻿using Autodesk.AutoCAD.ApplicationServices;
+using Autodesk.AutoCAD.ApplicationServices;
 using Autodesk.AutoCAD.DatabaseServices;
 using Autodesk.AutoCAD.EditorInput;
 using Autodesk.AutoCAD.Geometry;
@@ -25,33 +25,114 @@ namespace MeshPlugin
         // Один и тот же список идёт и в консоль, и в чертёж, поэтому он лежит
         // здесь одним массивом: два отдельных текста разъехались бы при первой
         // же правке.
-        private static readonly string[] HelpLines =
+        //
+        // Команда хранится отдельно от описания: в консоли шрифт моноширинный и
+        // колонка держится пробелами, а в чертеже ISOCPEUR пропорциональный —
+        // пробелами там не выровнять, поэтому пункт печатается как
+        // «КОМАНДА — что делает», причём команда крупнее, жирная и подчёркнутая.
+        private sealed class HelpLine
         {
-            "Порядок работы с планом (команды набирать в командной строке):",
-            "",
-            "  1. LIRLAYERS    разложить выбранное по слоям: контур плиты и линии",
-            "  2. LIRWALLAXIS  контуры стен -> оси стен (основной путь)",
-            "     LIRWALLS     перенести выбранное в стены вручную, если ось не вышла",
-            "  3. LIRDOORS     дверные проёмы; отрезок обязан лежать точно на оси стены",
-            "  4. LIRPYLON     пилоны: ось и отпечаток контура на сетке",
-            "  5. LIRWALLJOIN  при нужде: дотянуть и сшить разорванные оси",
-            "  6. LIRCHECK     проверить план перед построением; чертёж не меняется",
-            "  7. LIRBUILD     построить сетку",
-            "  8. LIREXPORT    выгрузить .txt для ЛИРА-САПР",
-            "",
-            "  LIRVERSION      версия плагина и время сборки",
-            "  LIRHELP         этот список: в консоль и в чертёж, слой " + HelpLayerName,
-            "",
-            "Порядок не формальность: каждая команда читает слои, созданные предыдущей.",
-            "Круги в слое ПРОБЛЕМА — места, из-за которых построение остановилось;",
-            "исправьте их и повторите. Единицы чертежа — миллиметры, дуги в контурах",
-            "не допускаются. Перед LIRBUILD полезно прогнать LIRCHECK: она покажет",
-            "сразу все замечания, а не первое.",
-            "",
-            "Эта памятка вставляется и в чертёж, слева от плана. Повторный вызов",
-            "LIRHELP её обновляет, лишних копий не остаётся; убрать — обычным",
-            "СТЕРЕТЬ. Слой непечатаемый, на лист памятка не попадёт."
+            public readonly string Prefix;    // "  1. " или "     "
+            public readonly string Command;   // null — обычная строка текста
+            public readonly string Text;
+
+            public HelpLine(string text) : this("", null, text) { }
+
+            public HelpLine(string prefix, string command, string text)
+            {
+                Prefix = prefix;
+                Command = command;
+                Text = text;
+            }
+        }
+
+        private static readonly HelpLine[] HelpLines =
+        {
+            new HelpLine("Порядок работы с планом (команды набирать в командной строке):"),
+            new HelpLine(""),
+            new HelpLine("  1. ", "LIRLAYERS", "разложить выбранное по слоям: контур плиты и линии"),
+            new HelpLine("  2. ", "LIRWALLAXIS", "контуры стен -> оси стен (основной путь)"),
+            new HelpLine("     ", "LIRWALLS", "перенести выбранное в стены вручную, если ось не вышла"),
+            new HelpLine("  3. ", "LIRDOORS", "дверные проёмы; отрезок обязан лежать точно на оси стены"),
+            new HelpLine("  4. ", "LIRPYLON", "пилоны: ось и отпечаток контура на сетке"),
+            new HelpLine("  5. ", "LIRWALLJOIN", "при нужде: дотянуть и сшить разорванные оси"),
+            new HelpLine("  6. ", "LIRCHECK", "проверить план перед построением; чертёж не меняется"),
+            new HelpLine("  7. ", "LIRBUILD", "построить сетку"),
+            new HelpLine("  8. ", "LIREXPORT", "выгрузить .txt для ЛИРА-САПР"),
+            new HelpLine(""),
+            new HelpLine("     ", "LIRVERSION", "версия плагина и время сборки"),
+            new HelpLine("     ", "LIRHELP", "этот список: в консоль и в чертёж, слой " + HelpLayerName),
+            new HelpLine(""),
+            new HelpLine("Порядок не формальность: каждая команда читает слои, созданные предыдущей."),
+            new HelpLine("Круги в слое ПРОБЛЕМА — места, из-за которых построение остановилось;"),
+            new HelpLine("исправьте их и повторите. Единицы чертежа — миллиметры, дуги в контурах"),
+            new HelpLine("не допускаются. Перед LIRBUILD полезно прогнать LIRCHECK: она покажет"),
+            new HelpLine("сразу все замечания, а не первое."),
+            new HelpLine(""),
+            new HelpLine("Эта памятка вставляется и в чертёж, слева от плана. Повторный вызов"),
+            new HelpLine("LIRHELP её обновляет, лишних копий не остаётся; убрать — обычным"),
+            new HelpLine("СТЕРЕТЬ. Слой непечатаемый, на лист памятка не попадёт.")
         };
+
+        // Ширина колонки команд в консоли: самое длинное имя — 11 знаков
+        // (LIRWALLAXIS), плюс два пробела до описания.
+        private const int HelpCommandColumn = 13;
+
+        private static string HelpConsoleText()
+        {
+            var sb = new System.Text.StringBuilder();
+            foreach (HelpLine line in HelpLines)
+            {
+                if (line.Command != null)
+                    sb.Append(line.Prefix).Append(line.Command.PadRight(HelpCommandColumn));
+                sb.Append(line.Text).Append('\n');
+            }
+            return sb.ToString();
+        }
+
+        // Управляющие коды MText: \H — высота в единицах чертежа, \L...\l —
+        // подчёркивание, \f — шрифт (b1 — жирный, c204 — кириллическая кодовая
+        // страница). Фигурные скобки ограничивают область действия кодов, иначе
+        // крупным и жирным пойдёт весь остаток текста.
+        private static string HelpCommandFormat()
+        {
+            return "\\H" + HelpCommandHeight.ToString("0.###",
+                    System.Globalization.CultureInfo.InvariantCulture)
+                + ";\\L\\f" + HelpTextStyleName + "|b1|i0|c204|p34;";
+        }
+
+        private static string HelpMTextContents()
+        {
+            string fmt = HelpCommandFormat();
+            var sb = new System.Text.StringBuilder();
+            foreach (HelpLine line in HelpLines)
+            {
+                if (sb.Length > 0) sb.Append("\\P");
+                sb.Append(EscapeMText(line.Prefix));
+                if (line.Command != null)
+                    sb.Append('{').Append(fmt).Append(line.Command).Append("\\l}").Append(" — ");
+                sb.Append(HighlightCommands(EscapeMText(line.Text), fmt));
+            }
+            return sb.ToString();
+        }
+
+        // Имена команд, попавшие в обычный текст («перед LIRBUILD прогнать
+        // LIRCHECK»), выделяются так же, как в списке.
+        private static readonly System.Text.RegularExpressions.Regex HelpCommandRegex =
+            new System.Text.RegularExpressions.Regex(@"\bLIR[A-Z]+\b",
+                System.Text.RegularExpressions.RegexOptions.Compiled);
+
+        private static string HighlightCommands(string text, string fmt)
+        {
+            return HelpCommandRegex.Replace(text, m => "{" + fmt + m.Value + "\\l}");
+        }
+
+        // В MText управляющими являются \ { } — в тексте памятки их быть не должно,
+        // но экранирование страхует от правки, которая их внесёт.
+        private static string EscapeMText(string s)
+        {
+            return s.Replace("\\", "\\\\").Replace("{", "\\{").Replace("}", "\\}");
+        }
 
         [CommandMethod("LIRHELP")]
         public void HelpCommand()
@@ -61,7 +142,7 @@ namespace MeshPlugin
             Database db = doc.Database;
             EchoCommandStart(ed, "LIRHELP");
 
-            ed.WriteMessage("\n" + string.Join("\n", HelpLines) + "\n");
+            ed.WriteMessage("\n" + HelpConsoleText());
 
             // Габариты чертежа считаются по объектам, а не по db.Extmin/Extmax:
             // те обновляются лишь при регенерации и на свежем чертеже врут.
@@ -79,6 +160,9 @@ namespace MeshPlugin
                     ltr.IsOff = false;
                     ltr.IsFrozen = false;
                     ltr.IsLocked = false;
+                    // Полная непрозрачность: если слой с таким именем уже лежал в
+                    // чертеже с выставленной прозрачностью, текст выглядел бы блёклым.
+                    ltr.Transparency = new Autodesk.AutoCAD.Colors.Transparency((byte)255);
 
                     BlockTableRecord space = (BlockTableRecord)tr.GetObject(db.CurrentSpaceId, OpenMode.ForWrite);
 
@@ -121,10 +205,13 @@ namespace MeshPlugin
                     mt.Layer = HelpLayerName;
                     mt.TextStyleId = styleId;
                     mt.TextHeight = HelpTextHeight;
+                    // AtLeast, а не Exactly: строки с командами выше остальных,
+                    // при фиксированном интервале они налезали бы друг на друга.
+                    mt.LineSpacingStyle = LineSpacingStyle.AtLeast;
                     mt.LineSpacingFactor = 1.0;
                     mt.Width = 0.0;                      // 0 — без переноса: строки остаются как написаны
                     mt.Attachment = AttachmentPoint.TopLeft;
-                    mt.Contents = string.Join("\\P", HelpLines);
+                    mt.Contents = HelpMTextContents();
                     mt.Location = Point3d.Origin;
 
                     space.AppendEntity(mt);
@@ -144,8 +231,8 @@ namespace MeshPlugin
                     tr.Commit();
 
                     ZoomTo(ed, pos.X, pos.Y - h, pos.X + w, pos.Y);
-                    ed.WriteMessage($"\nПамятка вставлена в чертёж: слой {HelpLayerName}, высота текста "
-                        + $"{HelpTextHeight:0.#} мм, стиль {HelpTextStyleName}.\n");
+                    ed.WriteMessage($"\nПамятка вставлена в чертёж: слой {HelpLayerName}, стиль {HelpTextStyleName}, "
+                        + $"высота текста {HelpTextHeight:0.#} мм, команд {HelpCommandHeight:0.#} мм.\n");
                 }
             }
             catch (System.Exception ex)
