@@ -82,26 +82,31 @@ namespace MeshPlugin
 
         // Сверка баланса площадей и вывод результата. Площади внутри плагина — в мм²,
         // пользователю показываются в м² (как в ЛИРЕ).
-        private void ReportAreaBalance(
-            Editor ed,
+        // Главная проверка результата экспорта: сумма площадей пластин обязана сойтись
+        // с площадью контура за вычетом отверстий. Недобор = дыра в схеме ЛИРЫ,
+        // перебор = залитый проём или наложенные элементы. Без Editor — чтобы этим же
+        // кодом пользовался самотест.
+        private List<string> AreaBalanceLines(
             double meshArea,
             double targetArea,
             double holesArea,
             int plateCount)
         {
             const double Mm2ToM2 = 1e-6;
+            var lines = new List<string>();
+
             double target = targetArea;
             double contourArea = targetArea + holesArea;
             if (target <= MeshTol.Zero)
             {
-                ed.WriteMessage("\nБаланс площадей: площадь контура за вычетом отверстий не положительна — проверка пропущена.\n");
-                return;
+                lines.Add("\nБаланс площадей: площадь контура за вычетом отверстий не положительна — проверка пропущена.\n");
+                return lines;
             }
 
             double diff = meshArea - target;           // > 0 — залито лишнее, < 0 — недобор
             double rel = Math.Abs(diff) / target;
 
-            ed.WriteMessage(
+            lines.Add(
                 $"\nБаланс площадей: контур {contourArea * Mm2ToM2:0.###} м²" +
                 (holesArea > 0 ? $" − отверстия {holesArea * Mm2ToM2:0.###} м²" : "") +
                 $" = {target * Mm2ToM2:0.###} м²; элементов {plateCount}, их площадь {meshArea * Mm2ToM2:0.###} м²; " +
@@ -109,14 +114,16 @@ namespace MeshPlugin
 
             if (rel <= MeshTol.AreaBalanceRelTol)
             {
-                ed.WriteMessage(" — норма.\n");
-                return;
+                lines.Add(" — норма.\n");
+                return lines;
             }
 
             if (diff < 0)
-                ed.WriteMessage($"\nВНИМАНИЕ: элементы не покрывают {Math.Abs(diff) * Mm2ToM2:0.###} м² плиты — в схеме ЛИРЫ там будут дыры. Смотрите круги в слое {ProblemLayerName} и сообщения о потерянных гранях, затем перестройте сетку.\n");
+                lines.Add($"\nВНИМАНИЕ: элементы не покрывают {Math.Abs(diff) * Mm2ToM2:0.###} м² плиты — в схеме ЛИРЫ там будут дыры. Смотрите круги в слое {ProblemLayerName} и сообщения о потерянных гранях, затем перестройте сетку.\n");
             else
-                ed.WriteMessage($"\nВНИМАНИЕ: элементы покрывают на {diff * Mm2ToM2:0.###} м² больше площади плиты — вероятно, залит проём (контур ушёл со слоя {HoleLayerName}) или элементы наложились друг на друга.\n");
+                lines.Add($"\nВНИМАНИЕ: элементы покрывают на {diff * Mm2ToM2:0.###} м² больше площади плиты — вероятно, залит проём (контур ушёл со слоя {HoleLayerName}) или элементы наложились друг на друга.\n");
+
+            return lines;
         }
 
         // Прямоугольник охвата полигона — предфильтр для проверок «точка внутри пустоты»

@@ -35,6 +35,10 @@ description: AutoCAD .NET-плагин MeshPlugin (partial class Commands), ст
 (проверка входа) → `MESHQUADMESH` → `MESHEXPORTTXT`
 (skill `lira-sapr-mesh-export`).
 
+Расчёт сетки и расчёт экспорта живут отдельно от чертежа: `MeshCore.cs`
+(`BuildMeshCore`) и `ExportCore.cs` (`BuildExportCore`). Командам остаются промпты, чтение
+слоёв, отрисовка и запись файлов. Самотест гоняет оба ядра.
+
 Команд `MESHCLEAN`, `MESHCOLUMNSBAR` и `MESHQUALITY` больше нет — убраны
 23.08.2026 как довесок (см. references/commands.md).
 

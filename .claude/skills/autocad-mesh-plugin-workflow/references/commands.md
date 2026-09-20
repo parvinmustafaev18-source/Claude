@@ -20,7 +20,7 @@ MESHCOLUMNCROSS → (MESHWALLJOIN) → MESHCHECK → MESHQUADMESH → MESHEXPORT
 | MESHCOLUMNCROSS | Commands.cs:733 | замкнутые контуры пилонов | одна ось в `WALLS(H-t PILON)`, контур → `MESH_PYLONS` |
 | MESHQUADMESH | QuadMesh.cs:13 | контур плиты, шаг (300/400/500), контуры отверстий | сетка линиями в `LINE_TRIANGULATION` |
 | MESHCHECK | Check.cs:23 | контур плиты, шаг (300) | список всех замечаний по чертежу + круги в `ПРОБЛЕМА`; ничего не строит |
-| MESHEXPORTTXT | LiraExport.cs:18 | — | .txt для ЛИРА-САПР (см. skill `lira-sapr-mesh-export`) |
+| MESHEXPORTTXT | LiraExport.cs:18 | — | .txt для ЛИРА-САПР (расчёт — `BuildExportCore`, ExportCore.cs; см. skill `lira-sapr-mesh-export`) |
 
 Инвариант баланса площадей (`ReportAreaBalance`, SelfCheck.cs) печатается в конце
 MESHEXPORTTXT: сумма площадей пластин обязана сойтись с площадью

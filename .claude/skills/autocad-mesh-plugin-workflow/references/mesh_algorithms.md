@@ -178,6 +178,11 @@ Geometry.cs:90, округление до 0.001) → индексы треуго
 
 ## Соседние алгоритмы
 
+Экспорт отделён от чертежа так же, как расчёт сетки: `BuildExportCore(ExportInput)`
+→ `ExportResult` (ExportCore.cs) отдаёт узлы, элементы и готовый текст задачи и
+легенды, а команда только пишет файлы и рисует круги. Проверки схемы —
+`CheckExportInvariants` (ExportSelfCheck.cs), их гоняет MESHSELFTEST.
+
 Сборка элементов из линий чертежа заново осталась только в экспорте:
 `SplitSegmentsAtIntersections` (Geometry.cs, режет Х-пересечения через
 `SpatialGrid`) → `ExtractPlanarFaces` (**LiraExport.cs:747**, обход граней
