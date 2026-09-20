@@ -1,4 +1,4 @@
-﻿using Autodesk.AutoCAD.ApplicationServices;
+using Autodesk.AutoCAD.ApplicationServices;
 using Autodesk.AutoCAD.DatabaseServices;
 using Autodesk.AutoCAD.EditorInput;
 using Autodesk.AutoCAD.Geometry;
@@ -50,16 +50,17 @@ namespace MeshPlugin
         {
             new HelpLine("Порядок работы с планом (команды набирать в командной строке):"),
             new HelpLine(""),
-            new HelpLine("  1. ", "LIRWALLAXIS", "контуры стен -> оси стен (основной путь)"),
-            new HelpLine("     ", "LIRWALLS", "перенести выбранное в стены вручную, если ось не вышла"),
-            new HelpLine("  2. ", "LIRWALLJOIN", "при нужде: дотянуть и сшить разорванные оси"),
+            new HelpLine("  1. ", "LIRWALLS", "оси стен: выбрать начерченные оси и указать толщину"),
+            new HelpLine("     ", "LIRWALLAXIS", "или из контуров стен — ось и толщина посчитаются сами"),
+            new HelpLine("  2. ", "LIRWALLJOIN", "дотянуть и сшить разорванные оси"),
             new HelpLine("  3. ", "LIRPYLON", "пилоны: ось и отпечаток контура на сетке"),
-            new HelpLine("  4. ", "LIRDOORS", "дверные проёмы; отрезок обязан лежать точно на оси стены"),
-            new HelpLine("  5. ", "LIRCHECK", "проверить план перед построением; чертёж не меняется"),
-            new HelpLine("  6. ", "LIRBUILD", "построить сетку"),
-            new HelpLine("  7. ", "LIRLAYERS", "построенную сетку и контур плиты — по слоям"),
-            new HelpLine("  8. ", "LIREXPORT", "выгрузить .txt для ЛИРА-САПР"),
+            new HelpLine("  4. ", "LIRBUILD", "построить сетку"),
+            new HelpLine("  5. ", "LIRLAYERS", "сетку и контур плиты — по слоям; здесь же толщина плиты"),
+            new HelpLine("  6. ", "LIREXPORT", "выгрузить .txt для ЛИРА-САПР"),
             new HelpLine(""),
+            new HelpLine("По желанию:"),
+            new HelpLine("     ", "LIRDOORS", "дверные проёмы; чертить ДО LIRBUILD"),
+            new HelpLine("     ", "LIRCHECK", "проверить план перед построением; чертёж не меняется"),
             new HelpLine("     ", "LIRVERSION", "версия плагина и время сборки"),
             new HelpLine("     ", "LIRHELP", "этот список: в консоль и в чертёж, слой " + HelpLayerName),
             new HelpLine(""),
@@ -69,8 +70,7 @@ namespace MeshPlugin
             new HelpLine("спрашивается там же и уходит в имя слоя контура."),
             new HelpLine("Круги в слое ПРОБЛЕМА — места, из-за которых построение остановилось;"),
             new HelpLine("исправьте их и повторите. Единицы чертежа — миллиметры, дуги в контурах"),
-            new HelpLine("не допускаются. Перед LIRBUILD полезно прогнать LIRCHECK: она покажет"),
-            new HelpLine("сразу все замечания, а не первое."),
+            new HelpLine("не допускаются."),
             new HelpLine(""),
             new HelpLine("Эта памятка вставляется и в чертёж, слева от плана. Повторный вызов"),
             new HelpLine("LIRHELP её обновляет, лишних копий не остаётся; убрать — обычным"),
