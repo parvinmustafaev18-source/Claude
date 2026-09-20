@@ -22,33 +22,181 @@ namespace MeshPlugin
         // Порядок работы в самом AutoCAD: инженер открывает плагин не каждый день,
         // и держать последовательность в голове ему незачем. Текст намеренно
         // повторяет памятку — расхождение между ними хуже, чем отсутствие обоих.
+        // Один и тот же список идёт и в консоль, и в чертёж, поэтому он лежит
+        // здесь одним массивом: два отдельных текста разъехались бы при первой
+        // же правке.
+        private static readonly string[] HelpLines =
+        {
+            "Порядок работы с планом (команды набирать в командной строке):",
+            "",
+            "  1. LIRLAYERS    разложить выбранное по слоям: контур плиты и линии",
+            "  2. LIRWALLAXIS  контуры стен -> оси стен (основной путь)",
+            "     LIRWALLS     перенести выбранное в стены вручную, если ось не вышла",
+            "  3. LIRDOORS     дверные проёмы; отрезок обязан лежать точно на оси стены",
+            "  4. LIRPYLON     пилоны: ось и отпечаток контура на сетке",
+            "  5. LIRWALLJOIN  при нужде: дотянуть и сшить разорванные оси",
+            "  6. LIRCHECK     проверить план перед построением; чертёж не меняется",
+            "  7. LIRBUILD     построить сетку",
+            "  8. LIREXPORT    выгрузить .txt для ЛИРА-САПР",
+            "",
+            "  LIRVERSION      версия плагина и время сборки",
+            "  LIRHELP         этот список: в консоль и в чертёж, слой " + HelpLayerName,
+            "",
+            "Порядок не формальность: каждая команда читает слои, созданные предыдущей.",
+            "Круги в слое ПРОБЛЕМА — места, из-за которых построение остановилось;",
+            "исправьте их и повторите. Единицы чертежа — миллиметры, дуги в контурах",
+            "не допускаются. Перед LIRBUILD полезно прогнать LIRCHECK: она покажет",
+            "сразу все замечания, а не первое.",
+            "",
+            "Эта памятка вставляется и в чертёж, слева от плана. Повторный вызов",
+            "LIRHELP её обновляет, лишних копий не остаётся; убрать — обычным",
+            "СТЕРЕТЬ. Слой непечатаемый, на лист памятка не попадёт."
+        };
+
         [CommandMethod("LIRHELP")]
         public void HelpCommand()
         {
             Document doc = Application.DocumentManager.MdiActiveDocument;
             Editor ed = doc.Editor;
+            Database db = doc.Database;
             EchoCommandStart(ed, "LIRHELP");
-            ed.WriteMessage(
-                "\nПорядок работы с планом (команды набирать в командной строке):\n" +
-                "\n" +
-                "  1. LIRLAYERS    разложить выбранное по слоям: контур плиты и линии\n" +
-                "  2. LIRWALLAXIS  контуры стен -> оси стен (основной путь)\n" +
-                "     LIRWALLS     перенести выбранное в стены вручную, если ось не вышла\n" +
-                "  3. LIRDOORS     дверные проёмы; отрезок обязан лежать точно на оси стены\n" +
-                "  4. LIRPYLON     пилоны: ось и отпечаток контура на сетке\n" +
-                "  5. LIRWALLJOIN  при нужде: дотянуть и сшить разорванные оси\n" +
-                "  6. LIRCHECK     проверить план перед построением; чертёж не меняется\n" +
-                "  7. LIRBUILD     построить сетку\n" +
-                "  8. LIREXPORT    выгрузить .txt для ЛИРА-САПР\n" +
-                "\n" +
-                "  LIRVERSION      версия плагина и время сборки\n" +
-                "  LIRHELP         этот список\n" +
-                "\n" +
-                "Порядок не формальность: каждая команда читает слои, созданные предыдущей.\n" +
-                "Круги в слое ПРОБЛЕМА — места, из-за которых построение остановилось;\n" +
-                "исправьте их и повторите. Единицы чертежа — миллиметры, дуги в контурах\n" +
-                "не допускаются. Перед LIRBUILD полезно прогнать LIRCHECK: она покажет\n" +
-                "сразу все замечания, а не первое.\n");
+
+            ed.WriteMessage("\n" + string.Join("\n", HelpLines) + "\n");
+
+            // Габариты чертежа считаются по объектам, а не по db.Extmin/Extmax:
+            // те обновляются лишь при регенерации и на свежем чертеже врут.
+            // Сама памятка в габариты не входит, иначе каждый вызов уводил бы её
+            // всё дальше влево.
+            try
+            {
+                using (Transaction tr = db.TransactionManager.StartTransaction())
+                {
+                    EnsureLayer(db, tr, HelpLayerName, HelpLayerColor);
+
+                    LayerTable lt = (LayerTable)tr.GetObject(db.LayerTableId, OpenMode.ForRead);
+                    LayerTableRecord ltr = (LayerTableRecord)tr.GetObject(lt[HelpLayerName], OpenMode.ForWrite);
+                    ltr.IsPlottable = false;
+                    ltr.IsOff = false;
+                    ltr.IsFrozen = false;
+                    ltr.IsLocked = false;
+
+                    BlockTableRecord space = (BlockTableRecord)tr.GetObject(db.CurrentSpaceId, OpenMode.ForWrite);
+
+                    bool hasExtents = false;
+                    double minX = 0, minY = 0, maxX = 0, maxY = 0;
+                    var oldHelp = new List<ObjectId>();
+
+                    foreach (ObjectId id in space)
+                    {
+                        Entity ent = tr.GetObject(id, OpenMode.ForRead) as Entity;
+                        if (ent == null) continue;
+                        if (ent.Layer == HelpLayerName) { oldHelp.Add(id); continue; }
+
+                        Extents3d ee;
+                        try { ee = ent.GeometricExtents; }
+                        catch { continue; }   // объекты без габаритов (пустой текст и т.п.)
+                        if (!hasExtents)
+                        {
+                            minX = ee.MinPoint.X; minY = ee.MinPoint.Y;
+                            maxX = ee.MaxPoint.X; maxY = ee.MaxPoint.Y;
+                            hasExtents = true;
+                        }
+                        else
+                        {
+                            minX = Math.Min(minX, ee.MinPoint.X); minY = Math.Min(minY, ee.MinPoint.Y);
+                            maxX = Math.Max(maxX, ee.MaxPoint.X); maxY = Math.Max(maxY, ee.MaxPoint.Y);
+                        }
+                    }
+
+                    foreach (ObjectId id in oldHelp)
+                    {
+                        Entity ent = (Entity)tr.GetObject(id, OpenMode.ForWrite);
+                        ent.Erase();
+                    }
+
+                    ObjectId styleId = EnsureHelpTextStyle(db, tr);
+
+                    MText mt = new MText();
+                    mt.SetDatabaseDefaults();
+                    mt.Layer = HelpLayerName;
+                    mt.TextStyleId = styleId;
+                    mt.TextHeight = HelpTextHeight;
+                    mt.LineSpacingFactor = 1.0;
+                    mt.Width = 0.0;                      // 0 — без переноса: строки остаются как написаны
+                    mt.Attachment = AttachmentPoint.TopLeft;
+                    mt.Contents = string.Join("\\P", HelpLines);
+                    mt.Location = Point3d.Origin;
+
+                    space.AppendEntity(mt);
+                    tr.AddNewlyCreatedDBObject(mt, true);
+
+                    // Размеры известны только после вставки в чертёж — поэтому текст
+                    // сначала кладётся в ноль, а потом переносится на место.
+                    double w = mt.ActualWidth;
+                    double h = mt.ActualHeight;
+                    double gap = HelpTextHeight * 10.0;
+
+                    Point3d pos = hasExtents
+                        ? new Point3d(minX - gap - w, maxY, 0.0)
+                        : Point3d.Origin;
+                    mt.Location = pos;
+
+                    tr.Commit();
+
+                    ZoomTo(ed, pos.X, pos.Y - h, pos.X + w, pos.Y);
+                    ed.WriteMessage($"\nПамятка вставлена в чертёж: слой {HelpLayerName}, высота текста "
+                        + $"{HelpTextHeight:0.#} мм, стиль {HelpTextStyleName}.\n");
+                }
+            }
+            catch (System.Exception ex)
+            {
+                ed.WriteMessage($"\nПамятку в чертёж вставить не удалось: {ex.Message}\n"
+                    + "Список команд выше, в консоли.\n");
+            }
+        }
+
+        // Стиль памятки. ISOCPEUR — шрифт TrueType из поставки AutoCAD; кодовая
+        // страница 204 (кириллица) обязательна, иначе часть сборок рисует русские
+        // буквы вопросами. Высота в стиле нулевая: её задаёт сам текст.
+        private ObjectId EnsureHelpTextStyle(Database db, Transaction tr)
+        {
+            TextStyleTable tst = (TextStyleTable)tr.GetObject(db.TextStyleTableId, OpenMode.ForRead);
+            if (tst.Has(HelpTextStyleName)) return tst[HelpTextStyleName];
+
+            tst.UpgradeOpen();
+            TextStyleTableRecord st = new TextStyleTableRecord();
+            st.Name = HelpTextStyleName;
+            st.FileName = "isocpeur.ttf";
+            st.Font = new Autodesk.AutoCAD.GraphicsInterface.FontDescriptor(HelpTextStyleName, false, false, 204, 0);
+            st.TextSize = 0.0;
+            tst.Add(st);
+            tr.AddNewlyCreatedDBObject(st, true);
+            return st.ObjectId;
+        }
+
+        // Показать прямоугольник целиком, сохранив пропорции окна: без этого
+        // памятка встаёт далеко от плана и инженер её просто не находит.
+        private void ZoomTo(Editor ed, double minX, double minY, double maxX, double maxY)
+        {
+            try
+            {
+                using (ViewTableRecord view = ed.GetCurrentView())
+                {
+                    double w = Math.Max(maxX - minX, 1.0) * 1.2;
+                    double h = Math.Max(maxY - minY, 1.0) * 1.2;
+                    double aspect = (view.Height > 1e-9) ? (view.Width / view.Height) : 1.0;
+                    if (w / h > aspect) h = w / aspect; else w = h * aspect;
+
+                    view.CenterPoint = new Point2d((minX + maxX) / 2.0, (minY + maxY) / 2.0);
+                    view.Width = w;
+                    view.Height = h;
+                    ed.SetCurrentView(view);
+                }
+            }
+            catch (System.Exception)
+            {
+                // Вид не переключился — текст всё равно на месте.
+            }
         }
 
 

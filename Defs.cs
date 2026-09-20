@@ -150,6 +150,14 @@ namespace MeshPlugin
         private const string ProblemLayerName = "ПРОБЛЕМА";
         private const double ProblemMarkRadius = 300.0;
 
+        // Памятка LIRHELP, вставленная в чертёж. Слой непечатаемый: текст нужен
+        // инженеру на экране, а на лист попасть не должен. Высота 250 мм подобрана
+        // под масштаб плана в миллиметрах.
+        private const string HelpLayerName = "LIRHELP";
+        private const short HelpLayerColor = 8;
+        private const double HelpTextHeight = 250.0;
+        private const string HelpTextStyleName = "ISOCPEUR";
+
         // Слой критических элементов, оставшийся от убранной команды MESHQUALITY:
         // на старых чертежах он ещё лежит, поэтому LIRBUILD его вычищает.
         private const string BadElementsLayerName = "ПЛОХИЕ";
@@ -203,6 +211,7 @@ namespace MeshPlugin
                 || layer == TriangulationLayerName
                 || layer == HoleLayerName
                 || layer == PylonOutlineLayerName
+                || layer == HelpLayerName
                 || IsColumnLayer(layer);
         }
 
