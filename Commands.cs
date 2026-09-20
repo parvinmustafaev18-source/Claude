@@ -10,22 +10,54 @@ namespace MeshPlugin
 {
     public partial class Commands
     {
-        [CommandMethod("MESHHELLO")]
-        public void HelloCommand()
+        [CommandMethod("LIRVERSION")]
+        public void VersionCommand()
         {
             Document doc = Application.DocumentManager.MdiActiveDocument;
             Editor ed = doc.Editor;
-            EchoCommandStart(ed, "MESHHELLO");
-            ed.WriteMessage("\nПривет! Плагин загружен и работает.\n");
+            EchoCommandStart(ed, "LIRVERSION");
+            ed.WriteMessage("\nПлагин загружен и работает. Список команд — LIRHELP.\n");
+        }
+
+        // Порядок работы в самом AutoCAD: инженер открывает плагин не каждый день,
+        // и держать последовательность в голове ему незачем. Текст намеренно
+        // повторяет памятку — расхождение между ними хуже, чем отсутствие обоих.
+        [CommandMethod("LIRHELP")]
+        public void HelpCommand()
+        {
+            Document doc = Application.DocumentManager.MdiActiveDocument;
+            Editor ed = doc.Editor;
+            EchoCommandStart(ed, "LIRHELP");
+            ed.WriteMessage(
+                "\nПорядок работы с планом (команды набирать в командной строке):\n" +
+                "\n" +
+                "  1. LIRLAYERS    разложить выбранное по слоям: контур плиты и линии\n" +
+                "  2. LIRWALLAXIS  контуры стен -> оси стен (основной путь)\n" +
+                "     LIRWALLS     перенести выбранное в стены вручную, если ось не вышла\n" +
+                "  3. LIRDOORS     дверные проёмы; отрезок обязан лежать точно на оси стены\n" +
+                "  4. LIRPYLON     пилоны: ось и отпечаток контура на сетке\n" +
+                "  5. LIRWALLJOIN  при нужде: дотянуть и сшить разорванные оси\n" +
+                "  6. LIRCHECK     проверить план перед построением; чертёж не меняется\n" +
+                "  7. LIRBUILD     построить сетку\n" +
+                "  8. LIREXPORT    выгрузить .txt для ЛИРА-САПР\n" +
+                "\n" +
+                "  LIRVERSION      версия плагина и время сборки\n" +
+                "  LIRHELP         этот список\n" +
+                "\n" +
+                "Порядок не формальность: каждая команда читает слои, созданные предыдущей.\n" +
+                "Круги в слое ПРОБЛЕМА — места, из-за которых построение остановилось;\n" +
+                "исправьте их и повторите. Единицы чертежа — миллиметры, дуги в контурах\n" +
+                "не допускаются. Перед LIRBUILD полезно прогнать LIRCHECK: она покажет\n" +
+                "сразу все замечания, а не первое.\n");
         }
 
 
-        [CommandMethod("MESHLAYERS")]
+        [CommandMethod("LIRLAYERS")]
         public void CreateLayersCommand()
         {
             Document doc = Application.DocumentManager.MdiActiveDocument;
             Editor ed = doc.Editor;
-            EchoCommandStart(ed, "MESHLAYERS");
+            EchoCommandStart(ed, "LIRLAYERS");
             Database db = doc.Database;
 
             PromptSelectionOptions pso = new PromptSelectionOptions();
@@ -65,7 +97,7 @@ namespace MeshPlugin
                 int skippedWalls = 0;
                 int skippedService = 0;
 
-                // Слои, которые MESHLAYERS не трогает: стены/пилоны и служебные слои
+                // Слои, которые LIRLAYERS не трогает: стены/пилоны и служебные слои
                 // плагина (проёмы MESH_HOLES, маркеры MESH_*, ПРОБЛЕМА, ПЛОХИЕ). Без этого
                 // рамочный выбор уводил полилинии проёмов с MESH_HOLES → экспорт не видел
                 // отверстия (holePolys=0) и зашивал их веером КЭ 42.
@@ -127,16 +159,16 @@ namespace MeshPlugin
             }
             catch (System.Exception ex)
             {
-                ed.WriteMessage($"\nОшибка MESHLAYERS: {ex.Message}\nИзменения команды отменены.\n");
+                ed.WriteMessage($"\nОшибка LIRLAYERS: {ex.Message}\nИзменения команды отменены.\n");
             }
         }
 
-        [CommandMethod("MESHWALLS")]
+        [CommandMethod("LIRWALLS")]
         public void CreateWallsLayerCommand()
         {
             Document doc = Application.DocumentManager.MdiActiveDocument;
             Editor ed = doc.Editor;
-            EchoCommandStart(ed, "MESHWALLS");
+            EchoCommandStart(ed, "LIRWALLS");
             Database db = doc.Database;
 
             PromptDoubleOptions pdo = new PromptDoubleOptions("\nТолщина стены: ");
@@ -187,16 +219,16 @@ namespace MeshPlugin
             }
             catch (System.Exception ex)
             {
-                ed.WriteMessage($"\nОшибка MESHWALLS: {ex.Message}\nИзменения команды отменены.\n");
+                ed.WriteMessage($"\nОшибка LIRWALLS: {ex.Message}\nИзменения команды отменены.\n");
             }
         }
 
-        [CommandMethod("MESHDOORS")]
+        [CommandMethod("LIRDOORS")]
         public void CreateDoorsLayerCommand()
         {
             Document doc = Application.DocumentManager.MdiActiveDocument;
             Editor ed = doc.Editor;
-            EchoCommandStart(ed, "MESHDOORS");
+            EchoCommandStart(ed, "LIRDOORS");
             Database db = doc.Database;
 
             // Высота двери (в мм) — уходит в имя слоя WALL_DOORS(H-<высота>).
@@ -265,22 +297,22 @@ namespace MeshPlugin
             }
             catch (System.Exception ex)
             {
-                ed.WriteMessage($"\nОшибка MESHDOORS: {ex.Message}\nИзменения команды отменены.\n");
+                ed.WriteMessage($"\nОшибка LIRDOORS: {ex.Message}\nИзменения команды отменены.\n");
             }
         }
 
         // Осевые линии стен из их контуров: для замкнутого прямоугольного контура
         // толщина = короткая пара сторон, ось = линия между серединами торцов.
-        // Ось попадает в слой WALLS(H-толщина) — дальше её видят MESHQUADMESH и
-        // MESHEXPORTTXT как обычную стену. Исходный контур не изменяется.
+        // Ось попадает в слой WALLS(H-толщина) — дальше её видят LIRBUILD и
+        // LIREXPORT как обычную стену. Исходный контур не изменяется.
         // Непрямоугольные контуры (Г-образные и т.п.) пропускаются — для них ось
-        // строится вручную и оформляется через MESHWALLS.
-        [CommandMethod("MESHWALLAXIS")]
+        // строится вручную и оформляется через LIRWALLS.
+        [CommandMethod("LIRWALLAXIS")]
         public void WallAxisCommand()
         {
             Document doc = Application.DocumentManager.MdiActiveDocument;
             Editor ed = doc.Editor;
-            EchoCommandStart(ed, "MESHWALLAXIS");
+            EchoCommandStart(ed, "LIRWALLAXIS");
             Database db = doc.Database;
 
             PromptSelectionOptions pso = new PromptSelectionOptions();
@@ -359,7 +391,7 @@ namespace MeshPlugin
                     axisCount++;
                 }
 
-                ed.WriteMessage($"\nОсевых линий построено: {axisCount}, пропущено незамкнутых: {skippedOpen}, непрямоугольных (ось вручную + MESHWALLS): {skippedComplex}" +
+                ed.WriteMessage($"\nОсевых линий построено: {axisCount}, пропущено незамкнутых: {skippedOpen}, непрямоугольных (ось вручную + LIRWALLS): {skippedComplex}" +
                     (skippedService > 0 ? $", пропущено в служебных слоях плагина: {skippedService}" : "") + "\n");
                 foreach (var kv in thicknessLayers)
                     ed.WriteMessage($"  {kv.Key}: {kv.Value}\n");
@@ -369,7 +401,7 @@ namespace MeshPlugin
             }
             catch (System.Exception ex)
             {
-                ed.WriteMessage($"\nОшибка MESHWALLAXIS: {ex.Message}\nИзменения команды отменены.\n");
+                ed.WriteMessage($"\nОшибка LIRWALLAXIS: {ex.Message}\nИзменения команды отменены.\n");
             }
         }
 
@@ -378,12 +410,12 @@ namespace MeshPlugin
         // (только удлинение, укорачивания нет), коллинеарные из одного слоя слить в один
         // отрезок. Дотягивание ограничено максимальным зазором, чтобы случайный выбор
         // не продлил ось через весь план.
-        [CommandMethod("MESHWALLJOIN")]
+        [CommandMethod("LIRWALLJOIN")]
         public void JoinWallAxesCommand()
         {
             Document doc = Application.DocumentManager.MdiActiveDocument;
             Editor ed = doc.Editor;
-            EchoCommandStart(ed, "MESHWALLJOIN");
+            EchoCommandStart(ed, "LIRWALLJOIN");
             Database db = doc.Database;
 
             PromptSelectionOptions pso = new PromptSelectionOptions();
@@ -557,7 +589,7 @@ namespace MeshPlugin
             }
             catch (System.Exception ex)
             {
-                ed.WriteMessage($"\nОшибка MESHWALLJOIN: {ex.Message}\nИзменения команды отменены.\n");
+                ed.WriteMessage($"\nОшибка LIRWALLJOIN: {ex.Message}\nИзменения команды отменены.\n");
             }
         }
 
@@ -566,18 +598,18 @@ namespace MeshPlugin
         // с толщиной, равной короткой стороне, — в слое WALLS(H-<толщина> PILON).
         // Дальше это обычная стена: сетка врезает её как пластину КЭ 44 с толщиной из
         // имени слоя; стержень КЭ 10 не создаётся (нет точки в COLUMNS). Узел точно в
-        // центре пилона в поперечном направлении обеспечивает уже сама MESHQUADMESH —
+        // центре пилона в поперечном направлении обеспечивает уже сама LIRBUILD —
         // она принудительно врезает перпендикуляр через середину оси-стены с суффиксом
         // PILON (см. GetPylonCrossConstraints), поэтому вторую линию рисовать не нужно.
         // Суффикс PILON отличает пилоны от обычных стен. Исходный контур и старые точки
         // центров (COLUMNS) удаляются. Габариты — по bbox: контур должен быть
         // прямоугольником без поворота.
-        [CommandMethod("MESHCOLUMNCROSS")]
+        [CommandMethod("LIRPYLON")]
         public void CreateColumnCrossCommand()
         {
             Document doc = Application.DocumentManager.MdiActiveDocument;
             Editor ed = doc.Editor;
-            EchoCommandStart(ed, "MESHCOLUMNCROSS");
+            EchoCommandStart(ed, "LIRPYLON");
             Database db = doc.Database;
 
             PromptSelectionOptions pso = new PromptSelectionOptions();
@@ -659,7 +691,7 @@ namespace MeshPlugin
 
                     // Единственная ось-пластина — вдоль ДЛИННОЙ стороны пилона, толщина
                     // равна короткой стороне. Поперечный узел в центре обеспечит сама
-                    // MESHQUADMESH (перпендикуляр через середину этой оси), поэтому вторую
+                    // LIRBUILD (перпендикуляр через середину этой оси), поэтому вторую
                     // линию не рисуем.
                     bool xIsLong = b >= h;
                     string wallLayer = xIsLong
@@ -688,9 +720,9 @@ namespace MeshPlugin
                     ms.AppendEntity(lx);
                     tr.AddNewlyCreatedDBObject(lx, true);
 
-                    // Контур НЕ стирается: MESHQUADMESH отпечатывает его на сетке плиты
-                    // (узлы в углах, мелкая сетка внутри). Слой служебный: MESHLAYERS
-                    // его не уводит, MESHWALLAXIS не считает стеной.
+                    // Контур НЕ стирается: LIRBUILD отпечатывает его на сетке плиты
+                    // (узлы в углах, мелкая сетка внутри). Слой служебный: LIRLAYERS
+                    // его не уводит, LIRWALLAXIS не считает стеной.
                     EnsureLayer(db, tr, PylonOutlineLayerName, 8); // тёмно-серый
                     pl.Layer = PylonOutlineLayerName;
                     crossCount++;
@@ -710,14 +742,14 @@ namespace MeshPlugin
                 foreach (var ln in sizeLayers.Keys)
                     ed.WriteMessage($"  {ln}\n");
                 if (crossCount > 0)
-                    ed.WriteMessage($"Контуры пилонов сохранены в слое {PylonOutlineLayerName}: MESHQUADMESH отпечатает их на сетке плиты (узлы в углах, внутри сетка {MeshTol.PylonInnerCell:0} мм). Ось пилона ведёт себя как стена: врежется в сетку, получит узел в центре поперёк оси, экспорт даст пластины КЭ 44.\n");
+                    ed.WriteMessage($"Контуры пилонов сохранены в слое {PylonOutlineLayerName}: LIRBUILD отпечатает их на сетке плиты (узлы в углах, внутри сетка {MeshTol.PylonInnerCell:0} мм). Ось пилона ведёт себя как стена: врежется в сетку, получит узел в центре поперёк оси, экспорт даст пластины КЭ 44.\n");
 
                 tr.Commit();
             }
             }
             catch (System.Exception ex)
             {
-                ed.WriteMessage($"\nОшибка MESHCOLUMNCROSS: {ex.Message}\nИзменения команды отменены.\n");
+                ed.WriteMessage($"\nОшибка LIRPYLON: {ex.Message}\nИзменения команды отменены.\n");
             }
         }
 
@@ -766,7 +798,7 @@ namespace MeshPlugin
                 return false;
             }
 
-            // Самопересечения (общий поиск с MESHCHECK, Geometry.cs): здесь построение
+            // Самопересечения (общий поиск с LIRCHECK, Geometry.cs): здесь построение
             // останавливается на первом — контур всё равно нужно править.
             var selfInts = FindSelfIntersections(pts);
             if (selfInts.Count > 0)
@@ -851,7 +883,7 @@ namespace MeshPlugin
         // Квадраты-обозначения дверных проёмов: сторона DoorMarkSize, центр — середина
         // дверного отрезка, стороны развёрнуты вдоль стены (для наклонных стен тоже).
         // Старое обозначение того же проёма стирается, чтобы повторный запуск
-        // MESHDOORS на тех же отрезках не накапливал квадраты друг на друге.
+        // LIRDOORS на тех же отрезках не накапливал квадраты друг на друге.
         private int DrawDoorMarks(Transaction tr, Database db, List<Point2d> mids, List<Point2d> axes)
         {
             if (mids.Count == 0) return 0;
@@ -1234,9 +1266,9 @@ namespace MeshPlugin
         }
 
 
-        // Пилон-ось (MESHCOLUMNCROSS): пилон задаётся ОДНОЙ линией вдоль длинной стороны
+        // Пилон-ось (LIRPYLON): пилон задаётся ОДНОЙ линией вдоль длинной стороны
         // в слое WALLS(H-<t> PILON). Чтобы сетка гарантированно получила узел точно в
-        // центре пилона в ПОПЕРЕЧНОМ направлении, MESHQUADMESH принудительно врезает
+        // центре пилона в ПОПЕРЕЧНОМ направлении, LIRBUILD принудительно врезает
         // перпендикуляр через середину этой оси. Здесь такие перпендикуляры и строятся:
         // для каждой оси-стены с суффиксом PILON — отрезок через её середину, поперёк
         // оси, длиной в толщину t (короткую сторону пилона) из имени слоя.
@@ -1277,11 +1309,11 @@ namespace MeshPlugin
 
 
         // Контуры пилонов-пластин для ОТПЕЧАТКА на сетке плиты (слой MESH_PYLONS,
-        // сохраняется командой MESHCOLUMNCROSS). Это не пустота, как COLUMNS: внутри
+        // сохраняется командой LIRPYLON). Это не пустота, как COLUMNS: внутри
         // отпечатка сетка плиты есть, только мельче. Возвращаются прямоугольники в CCW.
         //
         // Фолбэк по осям нужен для чертежей, сделанных до появления слоя: там
-        // MESHCOLUMNCROSS контур ещё стирал, и восстановить прямоугольник можно только
+        // LIRPYLON контур ещё стирал, и восстановить прямоугольник можно только
         // из самой оси — её длина даёт длинную сторону, толщина из имени слоя короткую.
         // Ось, уже накрытая сохранённым контуром, второй раз не берётся.
         private List<List<Point2d>> GetPylonOutlines(
@@ -1324,7 +1356,7 @@ namespace MeshPlugin
                 double b = maxX - minX, h = maxY - minY;
 
                 // Отпечаток строится линиями сетки, поэтому повёрнутый контур отпечатать
-                // нечем: bbox описал бы его неверно. Признак тот же, что в MESHCOLUMNCROSS.
+                // нечем: bbox описал бы его неверно. Признак тот же, что в LIRPYLON.
                 if (b < 1.0 || h < 1.0
                     || Math.Abs(Math.Abs(PolygonArea(verts)) - b * h) > 0.05 * b * h)
                 {
@@ -1380,7 +1412,7 @@ namespace MeshPlugin
         }
 
 
-        // Собирает отрезки стен со всех слоёв WALLS(H-...), созданных командой MESHWALLS.
+        // Собирает отрезки стен со всех слоёв WALLS(H-...), созданных командой LIRWALLS.
         private List<Point2d[]> GetWallSegments(Transaction tr, Database db)
         {
             var result = new List<Point2d[]>();
@@ -1421,7 +1453,7 @@ namespace MeshPlugin
 
 
         // Концы дверных отрезков со слоёв WALL_DOORS(H-...) — «косяки» проёма.
-        // MESHQUADMESH ставит узлы сетки в этих точках, чтобы куски стены точно
+        // LIRBUILD ставит узлы сетки в этих точках, чтобы куски стены точно
         // совпали с проёмом (иначе он съезжал к ближайшему узлу сетки).
         private List<Point2d> GetDoorEndpoints(Transaction tr, Database db)
         {

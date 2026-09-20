@@ -42,7 +42,7 @@ namespace MeshPlugin
                 input.Segments.Add(new Point2d[] { seg[0], seg[1] });
 
             // Стены: в выдуманном плане толщина одна на всех — 200 мм, как у слоя
-            // WALLS(H-200), который ставит MESHWALLS по умолчанию.
+            // WALLS(H-200), который ставит LIRWALLS по умолчанию.
             foreach (var w in mesh.WallSegments)
             {
                 input.Segments.Add(new Point2d[] { w[0], w[1] });

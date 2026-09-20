@@ -43,7 +43,7 @@ namespace MeshPlugin
 
     public partial class Commands
     {
-        // Первая строка любой команды MESH*: что запущено и на какой сборке.
+        // Первая строка любой команды LIR*: что запущено и на какой сборке.
         private void EchoCommandStart(Editor ed, string command)
         {
             ed.WriteMessage($"\n{command} — {BuildInfo.Stamp}\n");

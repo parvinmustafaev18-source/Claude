@@ -69,7 +69,7 @@ point-in-polygon, α, снап, индексы узлов — всё уже ес
 | `TriangleAlpha(a,b,c)` | Geometry.cs:54 | α = 4√3·S / (a²+b²+c²) |
 | `QuadAlpha(q)` | Geometry.cs:67 | худшее из: отношение произведений α противолежащих пар и отклонение среднего от √3/2 |
 | `QuadShapeOk(quad)` | Geometry.cs:84 | α ≥ `MinQualityAlpha` |
-| `MinQualityAlpha` = 0.5 | Geometry.cs:51 | порог сращивания в MESHQUADMESH |
+| `MinQualityAlpha` = 0.5 | Geometry.cs:51 | порог сращивания в LIRBUILD |
 | `MinElementSize` = 100.0 | Geometry.cs:9 | минимальная длина ребра, мм |
 
 ## Разрезание Х-пересечений (Geometry.cs, хвост файла)

@@ -50,7 +50,7 @@ for %%F in ("dist\MeshPlugin.dll") do echo   Версия сборки: %%~tF
 echo   Папка: %BUNDLE%
 echo.
 echo Запустите AutoCAD - плагин загрузится сам.
-echo Проверка: команда MESHHELLO.
+echo Проверка: команда LIRVERSION.
 echo.
 echo Если AutoCAD пишет, что не может загрузить сборку, введите в нём
 echo SECURELOAD со значением 0 - это настройка пользователя, права

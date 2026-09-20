@@ -296,7 +296,7 @@ namespace MeshPlugin
         // Точки самопересечения замкнутого контура — все пары несмежных сторон.
         // При наложении параллельных сторон точки пересечения нет, берётся середина
         // второй стороны. Общая для ValidateContour (останавливает построение на
-        // первой) и MESHCHECK (показывает все сразу).
+        // первой) и LIRCHECK (показывает все сразу).
         private List<Point2d> FindSelfIntersections(List<Point2d> poly)
         {
             var result = new List<Point2d>();

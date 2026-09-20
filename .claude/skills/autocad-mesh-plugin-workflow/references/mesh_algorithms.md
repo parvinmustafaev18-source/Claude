@@ -1,4 +1,4 @@
-# MESHQUADMESH изнутри
+# LIRBUILD изнутри
 
 Тело команды — QuadMesh.cs:13–649. Ниже этапы в порядке выполнения с якорями.
 Порядок этапов существенен: почти каждый чинит то, что испортил предыдущий.
@@ -167,7 +167,7 @@ Geometry.cs:90, округление до 0.001) → индексы треуго
 | Микроэлементы у пилона/двери | `GetPylonAxisTargets`, jamb-цели |
 | Отпечатка пилона нет | контур не на `MESH_PYLONS` (старый чертёж → фолбэк по оси), повёрнутый контур |
 | Отпечаток съехал на ось | узлы отпечатка не попали в `fixedRegions` weld/smooth |
-| Две оси на одном пилоне | повторный MESHCOLUMNCROSS без очистки прежней оси в габарите |
+| Две оси на одном пилоне | повторный LIRPYLON без очистки прежней оси в габарите |
 | Кривые элементы у границы | `RemoveCollinearVertices`, ear-clipping и его fallback |
 | Сетка не дотянута до границы | `ClipSegmentsToContour`, `RemoveSegmentsOnContour` |
 | Поперечное ребро пилона пропало | попало в `cutSegments` вместо `splitConstraints` |
@@ -181,7 +181,7 @@ Geometry.cs:90, округление до 0.001) → индексы треуго
 Экспорт отделён от чертежа так же, как расчёт сетки: `BuildExportCore(ExportInput)`
 → `ExportResult` (ExportCore.cs) отдаёт узлы, элементы и готовый текст задачи и
 легенды, а команда только пишет файлы и рисует круги. Проверки схемы —
-`CheckExportInvariants` (ExportSelfCheck.cs), их гоняет MESHSELFTEST.
+`CheckExportInvariants` (ExportSelfCheck.cs), их гоняет MPTEST.
 
 Сборка элементов из линий чертежа заново осталась только в экспорте:
 `SplitSegmentsAtIntersections` (Geometry.cs, режет Х-пересечения через

@@ -9,7 +9,7 @@ using System.Diagnostics;
 
 namespace MeshPlugin
 {
-    // САМОТЕСТ ПЛАГИНА (MESHSELFTEST).
+    // САМОТЕСТ ПЛАГИНА (MPTEST).
     //
     // Ошибки сетки находились до сих пор самым дорогим способом: на реальном плане,
     // по одной, кругом «закрыть AutoCAD → собрать → открыть → посмотреть». Причём
@@ -22,7 +22,7 @@ namespace MeshPlugin
     // построение. К чертежу пользователя он отношения не имеет: планы живут в
     // памяти, ничего не рисуется и не сохраняется. На выходе одно число — сколько
     // прогонов провалилось; провалившийся план воспроизводится по номеру (seed)
-    // командой MESHSELFTESTCASE.
+    // командой MPTESTCASE.
     //
     // Оракул — не «эталонная сетка» (её неоткуда взять), а правила, которые сетка
     // обязана соблюдать при ЛЮБОМ входе: не выходить за контур, не залезать в
@@ -76,12 +76,12 @@ namespace MeshPlugin
         private const double SelfTestShiftX = 13137.0;
         private const double SelfTestShiftY = -7351.0;
 
-        [CommandMethod("MESHSELFTEST")]
+        [CommandMethod("MPTEST")]
         public void SelfTestCommand()
         {
             Document doc = Application.DocumentManager.MdiActiveDocument;
             Editor ed = doc.Editor;
-            EchoCommandStart(ed, "MESHSELFTEST");
+            EchoCommandStart(ed, "MPTEST");
 
             PromptIntegerOptions pio = new PromptIntegerOptions(
                 $"\nСколько выдуманных планов проверить (Enter — {SelfTestDefaultCount}): ");
@@ -193,7 +193,7 @@ namespace MeshPlugin
             {
                 ed.WriteMessage("Провалы:\n");
                 foreach (var f in failures) ed.WriteMessage("  " + f + "\n");
-                ed.WriteMessage("Посмотреть провалившийся план: команда MESHSELFTESTCASE, ввести его номер — план начертится в текущем чертеже, дальше обычный MESHQUADMESH.\n");
+                ed.WriteMessage("Посмотреть провалившийся план: команда MPTESTCASE, ввести его номер — план начертится в текущем чертеже, дальше обычный LIRBUILD.\n");
             }
 
             if (exportFailures > 0)
@@ -209,13 +209,13 @@ namespace MeshPlugin
         }
 
         // Начертить выдуманный план по его номеру, чтобы посмотреть на него глазами
-        // и прогнать обычный MESHQUADMESH. Слои — те же, что плагин ждёт от чертежа.
-        [CommandMethod("MESHSELFTESTCASE")]
+        // и прогнать обычный LIRBUILD. Слои — те же, что плагин ждёт от чертежа.
+        [CommandMethod("MPTESTCASE")]
         public void SelfTestCaseCommand()
         {
             Document doc = Application.DocumentManager.MdiActiveDocument;
             Editor ed = doc.Editor;
-            EchoCommandStart(ed, "MESHSELFTESTCASE");
+            EchoCommandStart(ed, "MPTESTCASE");
             Database db = doc.Database;
 
             PromptIntegerOptions pio = new PromptIntegerOptions("\nНомер плана (seed) из отчёта самотеста: ");
@@ -255,11 +255,11 @@ namespace MeshPlugin
                     DrawTestPlan(tr, db, plan);
                     tr.Commit();
                 }
-                ed.WriteMessage($"План начерчен. Дальше: MESHQUADMESH, контур плиты, шаг {plan.CellSize:0}.\n");
+                ed.WriteMessage($"План начерчен. Дальше: LIRBUILD, контур плиты, шаг {plan.CellSize:0}.\n");
             }
             catch (System.Exception ex)
             {
-                ed.WriteMessage($"\nОшибка MESHSELFTESTCASE: {ex.Message}\nЧертёж не изменён.\n");
+                ed.WriteMessage($"\nОшибка MPTESTCASE: {ex.Message}\nЧертёж не изменён.\n");
             }
         }
 

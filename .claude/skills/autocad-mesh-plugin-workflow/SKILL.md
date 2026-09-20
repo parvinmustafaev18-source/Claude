@@ -1,6 +1,6 @@
 ---
 name: autocad-mesh-plugin-workflow
-description: AutoCAD .NET-плагин MeshPlugin (partial class Commands), строящий регулярную квадратную КЭ-сетку по контуру плиты с учётом стен, пилонов, проёмов и отверстий. Используй при любой правке Commands.cs, QuadMesh.cs, Geometry.cs, MeshCore.cs, SpatialGrid.cs; при вопросах о командах MESH* (MESHLAYERS, MESHWALLS, MESHDOORS, MESHWALLAXIS, MESHWALLJOIN, MESHCOLUMNCROSS, MESHQUADMESH, MESHCHECK, MESHEXPORTTXT); о слоях FOUNDATION_SLABS/WALLS/COLUMNS/WALL_DOORS/MESH_*/ПРОБЛЕМА/ПЛОХИЕ и их именовании; об алгоритмах сетки (Sutherland-Hodgman, ear-clipping, edgeMap-сращивание, снап стен и дверей, пилоны-оси); о качестве элементов (α). Для формата .txt экспорта в ЛИРА-САПР — skill lira-sapr-mesh-export.
+description: AutoCAD .NET-плагин MeshPlugin (partial class Commands), строящий регулярную квадратную КЭ-сетку по контуру плиты с учётом стен, пилонов, проёмов и отверстий. Используй при любой правке Commands.cs, QuadMesh.cs, Geometry.cs, MeshCore.cs, SpatialGrid.cs; при вопросах о командах LIR* (LIRHELP, LIRLAYERS, LIRWALLS, LIRDOORS, LIRWALLAXIS, LIRWALLJOIN, LIRPYLON, LIRBUILD, LIRCHECK, LIREXPORT); о слоях FOUNDATION_SLABS/WALLS/COLUMNS/WALL_DOORS/MESH_*/ПРОБЛЕМА/ПЛОХИЕ и их именовании; об алгоритмах сетки (Sutherland-Hodgman, ear-clipping, edgeMap-сращивание, снап стен и дверей, пилоны-оси); о качестве элементов (α). Для формата .txt экспорта в ЛИРА-САПР — skill lira-sapr-mesh-export.
 ---
 
 # MeshPlugin — КЭ-сетка в AutoCAD
@@ -18,21 +18,23 @@ description: AutoCAD .NET-плагин MeshPlugin (partial class Commands), ст
 |---|---|
 | Что делает команда, что спрашивает, что создаёт, порядок вызова | `references/commands.md` |
 | Имя слоя, кто его читает/пишет/игнорирует | `references/layers.md` |
-| Устройство MESHQUADMESH: этапы, зачем каждый, где что чинить | `references/mesh_algorithms.md` |
+| Устройство LIRBUILD: этапы, зачем каждый, где что чинить | `references/mesh_algorithms.md` |
 | Есть ли уже готовая функция (пересечения, clipping, α, снап) | `references/geometry_quality_utils.md` |
 
 Правило: **один reference на задачу**, они не пересекаются по содержанию.
 Открывать исходник имеет смысл, когда правка уже локализована.
 
-Якорь `Commands.cs:733` — это Read с `offset`, а не приглашение читать файл
+Якорь `Commands.cs:607` — это Read с `offset`, а не приглашение читать файл
 целиком. Строки плывут при правках: если по якорю не тот символ, grep по имени,
 а reference из-за сдвига на пару строк не переписывай.
 
 ## Порядок команд на плане
 
-`MESHLAYERS` → `MESHWALLAXIS` и/или `MESHWALLS` → `MESHDOORS` →
-`MESHCOLUMNCROSS` (пилоны) → при нужде `MESHWALLJOIN` → `MESHCHECK`
-(проверка входа) → `MESHQUADMESH` → `MESHEXPORTTXT`
+Порядок печатает сама команда `LIRHELP` — в чертеже, а не в документации.
+
+`LIRLAYERS` → `LIRWALLAXIS` и/или `LIRWALLS` → `LIRDOORS` →
+`LIRPYLON` (пилоны) → при нужде `LIRWALLJOIN` → `LIRCHECK`
+(проверка входа) → `LIRBUILD` → `LIREXPORT`
 (skill `lira-sapr-mesh-export`).
 
 Расчёт сетки и расчёт экспорта живут отдельно от чертежа: `MeshCore.cs`
@@ -52,7 +54,7 @@ description: AutoCAD .NET-плагин MeshPlugin (partial class Commands), ст
 
 - **Стена, пилон и отверстие обязаны лежать внутри контура плиты.** Нарушение —
   `tr.Abort()` и круги в слое `ПРОБЛЕМА` отдельной транзакцией
-  (`MarkProblemPoints`, Commands.cs:987): чертёж при отказе не меняется, а
+  (`MarkProblemPoints`, Commands.cs:845): чертёж при отказе не меняется, а
   маркеры остаются. Новые проверки делай по этой же схеме.
 - **Внутренность пилона и отверстия всегда пуста.** Обеспечивается цепочкой:
   выброс ячеек → выброс кусков → финальная обрезка отрезков. Звенья ловят разные
@@ -70,12 +72,12 @@ description: AutoCAD .NET-плагин MeshPlugin (partial class Commands), ст
 ## Что ломается чаще всего
 
 - **Проём зашит сеткой** — контур ушёл с `MESH_HOLES` рамочным выделением.
-  Смотри `KeepLayer` (Commands.cs:70) и `IsServiceLayer` (Commands.cs:1120).
+  Смотри `KeepLayer` (Commands.cs:104) и `IsServiceLayer` (Defs.cs:196).
 - **Кривые элементы у границы** — коллинеарные вершины контура.
   `RemoveCollinearVertices` чистит вход, но не всегда достаточно; дальше
   ear-clipping и его fallback через диагонали (`references/mesh_algorithms.md`).
 - **Узел не по центру пилона поперёк** — так и задумано: узел даёт
-  принудительный перпендикуляр `GetPylonCrossConstraints` (Commands.cs:1469),
+  принудительный перпендикуляр `GetPylonCrossConstraints` (Commands.cs:1279),
   а не вторая нарисованная линия.
 - **Микроэлементы в единицы мм у пилона или двери** — линия сетки прошла в
   20–80 мм от оси. Лечится целями выравнивания (`GetPylonAxisTargets`,

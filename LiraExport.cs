@@ -15,12 +15,12 @@ namespace MeshPlugin
         // наши линии, а текстовый файл задачи (*.txt) она принимает узел в узел.
         // Формат снят с файла, сгенерированного ЛИРОЙ 2024 командой "Создать текстовый
         // файл": документы ( 0/ заголовок ) ( 1/ элементы ) ( 3/ жёсткости ) ( 4/ узлы ).
-        [CommandMethod("MESHEXPORTTXT")]
+        [CommandMethod("LIREXPORT")]
         public void ExportTaskTextCommand()
         {
             Document doc = Application.DocumentManager.MdiActiveDocument;
             Editor ed = doc.Editor;
-            EchoCommandStart(ed, "MESHEXPORTTXT");
+            EchoCommandStart(ed, "LIREXPORT");
             Database db = doc.Database;
 
             PromptEntityOptions peo = new PromptEntityOptions("\nВыберите контур плиты (полилинию): ");
@@ -34,7 +34,7 @@ namespace MeshPlugin
             }
 
             // Толщина плиты берётся из имени слоя контура FOUNDATION_SLABS(H-...),
-            // проставленного командой MESHLAYERS; ручной запрос — только если контур
+            // проставленного командой LIRLAYERS; ручной запрос — только если контур
             // лежит в другом слое.
             double thicknessMm = 0;
             using (Transaction trLayer = db.TransactionManager.StartTransaction())
@@ -52,7 +52,7 @@ namespace MeshPlugin
             else
             {
                 PromptDoubleOptions pdoH = new PromptDoubleOptions(
-                    "\nВ слое контура нет толщины (нужен FOUNDATION_SLABS(H-...), см. MESHLAYERS). Толщина плиты, мм: ");
+                    "\nВ слое контура нет толщины (нужен FOUNDATION_SLABS(H-...), см. LIRLAYERS). Толщина плиты, мм: ");
                 pdoH.DefaultValue = 300.0;
                 pdoH.AllowNegative = false;
                 pdoH.AllowZero = false;
@@ -323,7 +323,7 @@ namespace MeshPlugin
                 ed.WriteMessage($"\n[диагностика отверстий] объектов на слое {HoleLayerName}: {holeEntCount}; из них замкнутых контуров принято: {holePolys.Count}, незамкнутых полилиний: {holeOpenPolyCount}\n");
 
                 // Контуры тел пилонов. В планарный граф они НЕ добавляются: их грани уже
-                // лежат в сетке (MESHQUADMESH отпечатывает контур), а лишние рёбра дали
+                // лежат в сетке (LIRBUILD отпечатывает контур), а лишние рёбра дали
                 // бы наложение. Нужны только для того, чтобы отличить элементы плиты,
                 // попавшие в тело пилона, и дать им свою жёсткость.
                 var pylonRects = GetPylonOutlines(tr, db, out _, out _);
@@ -398,7 +398,7 @@ namespace MeshPlugin
             }
             catch (System.Exception ex)
             {
-                ed.WriteMessage($"\nОшибка MESHEXPORTTXT: {ex.Message}\n");
+                ed.WriteMessage($"\nОшибка LIREXPORT: {ex.Message}\n");
             }
         }
 

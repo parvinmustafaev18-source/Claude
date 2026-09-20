@@ -82,7 +82,7 @@ for %%F in ("bin\x64\Debug\MeshPlugin.dll") do echo   Собрано: %%~tF
 echo   Установлен в: %APPDATA%\Autodesk\ApplicationPlugins\MeshPlugin.bundle
 echo.
 echo Запустите AutoCAD - плагин загрузится сам.
-echo Проверка: команда MESHHELLO. Каждая команда MESH* печатает время
+echo Проверка: команда LIRVERSION. Каждая команда LIR* печатает время
 echo сборки - оно должно совпасть с указанным выше.
 echo.
 if not defined NOPAUSE pause

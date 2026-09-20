@@ -1,34 +1,42 @@
 # Команды плагина
 
-Порядок на плане: MESHLAYERS → MESHWALLAXIS/MESHWALLS → MESHDOORS →
-MESHCOLUMNCROSS → (MESHWALLJOIN) → MESHCHECK → MESHQUADMESH → MESHEXPORTTXT.
+Порядок на плане: LIRLAYERS → LIRWALLAXIS/LIRWALLS → LIRDOORS →
+LIRPYLON → (LIRWALLJOIN) → LIRCHECK → LIRBUILD → LIREXPORT.
+
+Все команды инженера начинаются на `LIR` — переименованы 20.09.2026, перед выдачей
+плагина на полевые тесты. Прежний префикс `MESH` совпадал с семейством встроенных
+команд AutoCAD (`MESH`, `MESHSMOOTH`, `MESHREFINE`, `MESHCREASE` и ещё десяток):
+набрав `MESH`, инженер получал наши команды вперемешку с чужими. Самотест уведён
+в отдельное пространство `MP*` — `MPTEST` и `MPTESTCASE` инженеру не нужны, а
+`MPTESTCASE` ещё и чертит выдуманный план прямо в активный чертёж.
 
 Команды MESHCLEAN, MESHCOLUMNSBAR и MESHQUALITY убраны 23.08.2026 по решению
 пользователя как довесок: уборка чертежа к сетке отношения не имела, пилон
-стержнем вытеснен MESHCOLUMNCROSS, а предупреждение о плохих элементах печатает
-сама MESHQUADMESH. Чтение старых чертежей сохранено: точка центра в слое
+стержнем вытеснен LIRPYLON, а предупреждение о плохих элементах печатает
+сама LIRBUILD. Чтение старых чертежей сохранено: точка центра в слое
 `COLUMNS` по-прежнему даёт стержень КЭ 10 при экспорте.
 
 | Команда | Файл:строка | Вход | Результат |
 |---|---|---|---|
-| MESHHELLO | Commands.cs:13 | — | проверка загрузки плагина |
-| MESHLAYERS | Commands.cs:22 | Line+LWPolyline, толщина плиты | Polyline → `FOUNDATION_SLABS(H-t)`, Line → `LINE_TRIANGULATION` |
-| MESHWALLS | Commands.cs:134 | толщина, Line+LWPolyline | всё выбранное → `WALLS(H-t)` |
-| MESHDOORS | Commands.cs:193 | высота (2100), отрезки на осях стен | → `WALL_DOORS(H-h)` + квадраты в `WALL_DOORS_MARKS` |
-| MESHWALLAXIS | Commands.cs:276 | замкнутые контуры стен | ось между серединами торцов → `WALLS(H-t)`, контур цел |
-| MESHWALLJOIN | Commands.cs:454 | отрезки, макс. зазор (500) | продление до пересечения + слияние коллинеарных |
-| MESHCOLUMNCROSS | Commands.cs:733 | замкнутые контуры пилонов | одна ось в `WALLS(H-t PILON)`, контур → `MESH_PYLONS` |
-| MESHQUADMESH | QuadMesh.cs:13 | контур плиты, шаг (300/400/500), контуры отверстий | сетка линиями в `LINE_TRIANGULATION` |
-| MESHCHECK | Check.cs:23 | контур плиты, шаг (300) | список всех замечаний по чертежу + круги в `ПРОБЛЕМА`; ничего не строит |
-| MESHEXPORTTXT | LiraExport.cs:18 | — | .txt для ЛИРА-САПР (расчёт — `BuildExportCore`, ExportCore.cs; см. skill `lira-sapr-mesh-export`) |
+| LIRVERSION | Commands.cs:13 | — | версия плагина и время сборки |
+| LIRHELP | Commands.cs:25 | — | порядок команд, по строке на каждую; дублирует памятку инженера |
+| LIRLAYERS | Commands.cs:55 | Line+LWPolyline, толщина плиты | Polyline → `FOUNDATION_SLABS(H-t)`, Line → `LINE_TRIANGULATION` |
+| LIRWALLS | Commands.cs:166 | толщина, Line+LWPolyline | всё выбранное → `WALLS(H-t)` |
+| LIRDOORS | Commands.cs:226 | высота (2100), отрезки на осях стен | → `WALL_DOORS(H-h)` + квадраты в `WALL_DOORS_MARKS` |
+| LIRWALLAXIS | Commands.cs:310 | замкнутые контуры стен | ось между серединами торцов → `WALLS(H-t)`, контур цел |
+| LIRWALLJOIN | Commands.cs:413 | отрезки, макс. зазор (500) | продление до пересечения + слияние коллинеарных |
+| LIRPYLON | Commands.cs:607 | замкнутые контуры пилонов | одна ось в `WALLS(H-t PILON)`, контур → `MESH_PYLONS` |
+| LIRBUILD | QuadMesh.cs:13 | контур плиты, шаг (300/400/500), контуры отверстий | сетка линиями в `LINE_TRIANGULATION` |
+| LIRCHECK | Check.cs:23 | контур плиты, шаг (300) | список всех замечаний по чертежу + круги в `ПРОБЛЕМА`; ничего не строит |
+| LIREXPORT | LiraExport.cs:18 | — | .txt для ЛИРА-САПР (расчёт — `BuildExportCore`, ExportCore.cs; см. skill `lira-sapr-mesh-export`) |
 
 Инвариант баланса площадей (`ReportAreaBalance`, SelfCheck.cs) печатается в конце
-MESHEXPORTTXT: сумма площадей пластин обязана сойтись с площадью
+LIREXPORT: сумма площадей пластин обязана сойтись с площадью
 контура за вычетом отверстий (порог `MeshTol.AreaBalanceRelTol` = 0.1%). Недобор
 = дыра в схеме ЛИРЫ, перебор = залитый проём или наложенные элементы.
 
 Первая строка любой команды — штамп сборки (`EchoCommandStart`, BuildInfo.cs):
-`MESHQUADMESH — MeshPlugin 1.0.0.0, сборка 25.07.2026 23:06, папка …\Contents`.
+`LIRBUILD — MeshPlugin 1.0.0.0, сборка 25.07.2026 23:06, папка …\Contents`.
 Время берётся из файла DLL (проект детерминированный, дата в PE — хеш, а не
 время), папка показывает, откуда загружено — bundle или NETLOAD из bin. Новая
 команда обязана начинаться с этого вызова.
@@ -37,66 +45,66 @@ MESHEXPORTTXT: сумма площадей пластин обязана сой�
 всё внутри try/catch с `Ошибка <ИМЯ>: {ex.Message}\nИзменения команды отменены.`
 Отказ валидации — `tr.Commit()` (маркеры на чертеже должны сохраниться), а
 жёсткий отказ по геометрии — `tr.Abort()` + `MarkProblemPoints` отдельной
-транзакцией (Commands.cs:987).
+транзакцией (Commands.cs:845).
 
 ---
 
-## MESHLAYERS — Commands.cs:22
+## LIRLAYERS — Commands.cs:55
 
 Раскладывает выбранное по слоям: `Polyline` → плита, `Line` → триангуляция.
 Второй контрольный проход перепроверяет и чинит несовпадения (счётчик
 `fixedCount`) — рамочное выделение легко уводит объекты не туда.
 
-`KeepLayer` (Commands.cs:70) — что команда **не** трогает: `WALLS(H-`,
+`KeepLayer` (Commands.cs:104) — что команда **не** трогает: `WALLS(H-`,
 `COLUMNS*`, `WALL_DOORS(`, `WALL_DOORS_MARKS`, `MESH_HOLES`, `ПРОБЛЕМА`,
 `MESH_*`, `ПЛОХИЕ`. Без этого списка полилинии проёмов уезжали с `MESH_HOLES`,
 экспорт не видел отверстий и зашивал их веером КЭ 42. Добавляешь служебный
-слой — вноси его сюда и в `IsServiceLayer` (Commands.cs:1120).
+слой — вноси его сюда и в `IsServiceLayer` (Defs.cs:196).
 
-## MESHWALLS — Commands.cs:134
+## LIRWALLS — Commands.cs:166
 
 Тупой перенос выбранного на `WALLS(H-<толщина>)`, без проверок геометрии.
-Ручной путь для осей, которые MESHWALLAXIS не осилил.
+Ручной путь для осей, которые LIRWALLAXIS не осилил.
 
-## MESHWALLAXIS — Commands.cs:276
+## LIRWALLAXIS — Commands.cs:310
 
 Из замкнутого 4-вершинного контура: `RemoveCollinearVertices(CleanupPolygon(...))`,
 толщина = средняя короткая пара сторон, длина = длинная. Отбрасывает:
 служебные слои (`IsServiceLayer`), незамкнутые, не 4 вершины после чистки,
 торцы разной длины (трапеция, допуск `0.2*t + 1`), `t < 1` или `length < t`.
 Толщина округляется до 10 мм — слоёв `WALLS(H-201)` быть не должно.
-Непрямоугольные (Г-образные) — вручную + MESHWALLS.
+Непрямоугольные (Г-образные) — вручную + LIRWALLS.
 
-## MESHDOORS — Commands.cs:193
+## LIRDOORS — Commands.cs:226
 
 Отрезок обязан лежать **точно на оси стены**: экспорт ищет кусок стены по
 середине дверного отрезка с допуском 1 мм. Полилиния из N сегментов = N проёмов.
 Квадраты-обозначения (сторона `DoorMarkSize` = 200) рисует `DrawDoorMarks`
-(Commands.cs:1029) в отдельном слое `WALL_DOORS_MARKS`; повторный запуск на тех
+(Commands.cs:887) в отдельном слое `WALL_DOORS_MARKS`; повторный запуск на тех
 же отрезках старые квадраты стирает (ищет в пределах `DoorMarkSize` от середины).
 
-## MESHWALLJOIN — Commands.cs:454
+## LIRWALLJOIN — Commands.cs:413
 
 До 5 проходов, в каждом: слияние коллинеарных отрезков **одного слоя**
 (боковое отклонение ≤1 мм, зазор ≤ maxGap) и продление непараллельных до точки
 пересечения прямых. Только удлинение, укорачивания нет. maxGap ограничивает
 дотягивание, чтобы случайный выбор не продлил ось через весь план.
 
-## MESHCOLUMNCROSS — Commands.cs:733 (основной режим)
+## LIRPYLON — Commands.cs:607 (основной режим)
 
 Пилон = **одна** ось-пластина вдоль длинной стороны, толщина = короткая сторона,
 слой `WALLS(H-<t> PILON)`. Исходный контур **не стирается**, а переносится на
-служебный слой `MESH_PYLONS` — из него MESHQUADMESH делает отпечаток на сетке
+служебный слой `MESH_PYLONS` — из него LIRBUILD делает отпечаток на сетке
 плиты. Старые точки центров из COLUMNS в габарите пилона стираются (иначе экспорт
 добавит лишний стержень КЭ 10), и там же убирается прежняя ось этого пилона —
 контур теперь переживает команду, и повторный запуск иначе положил бы вторую ось.
 Проверка прямоугольности: |площадь контура − b·h| ≤ 5% b·h, иначе контур
 повёрнут и bbox описывает его неверно — пропуск со счётчиком `skippedNotRect`.
 
-Второй линии креста нет: поперечный узел в центре даёт сама MESHQUADMESH через
-`GetPylonCrossConstraints` (Commands.cs:1469). Имя «крест» историческое.
+Второй линии креста нет: поперечный узел в центре даёт сама LIRBUILD через
+`GetPylonCrossConstraints` (Commands.cs:1279). Имя «крест» историческое.
 
-## MESHQUADMESH — QuadMesh.cs:13
+## LIRBUILD — QuadMesh.cs:13
 
 Отдельный документ: `references/mesh_algorithms.md`.
 
@@ -104,9 +112,9 @@ Prompt'ы: контур (Polyline) → шаг ячейки (default 300, keyword
 опциональный выбор контуров отверстий (Enter = пропустить; ранее созданные всё
 равно подхватятся со слоя `MESH_HOLES`).
 
-## MESHCHECK — Check.cs:23
+## LIRCHECK — Check.cs:23
 
-Pre-flight: те же требования к входу, что проверяет MESHQUADMESH, но за один
+Pre-flight: те же требования к входу, что проверяет LIRBUILD, но за один
 проход по чертежу и **без остановки на первом нарушении** — весь список сразу.
 Ничего не строит и не переносит между слоями; единственная запись в чертёж —
 круги в `ПРОБЛЕМА` (старые стираются) и маркеры кривых углов в
@@ -125,9 +133,9 @@ Pre-flight: те же требования к входу, что проверя�
 
 Проверки контура (самопересечения, углы) общие с `ValidateContour`:
 `FindSelfIntersections` и `FindNonRightCorners` в Geometry.cs. Разница в
-реакции: `ValidateContour` падает на первом, MESHCHECK показывает все.
+реакции: `ValidateContour` падает на первом, LIRCHECK показывает все.
 
-## MESHEXPORTTXT — LiraExport.cs:18
+## LIREXPORT — LiraExport.cs:18
 
 Формат и документы — skill `lira-sapr-mesh-export`. Здесь только про жёсткости.
 

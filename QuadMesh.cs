@@ -10,12 +10,12 @@ namespace MeshPlugin
 {
     public partial class Commands
     {
-        [CommandMethod("MESHQUADMESH")]
+        [CommandMethod("LIRBUILD")]
         public void HybridMeshCommand()
         {
             Document doc = Application.DocumentManager.MdiActiveDocument;
             Editor ed = doc.Editor;
-            EchoCommandStart(ed, "MESHQUADMESH");
+            EchoCommandStart(ed, "LIRBUILD");
             Database db = doc.Database;
 
             PromptEntityOptions peo = new PromptEntityOptions("\nВыберите замкнутый контур (полилинию): ");
@@ -117,7 +117,7 @@ namespace MeshPlugin
                 // нет. Геометрически это та же «пустота», что и внутренность пилона, но
                 // без центральной точки, без крест-оси и без экспорта пластинами.
                 // Интерактивно выбранные контуры переносятся на служебный слой MESH_HOLES
-                // и там же накапливаются между запусками; MESHEXPORTTXT по этому слою
+                // и там же накапливаются между запусками; LIREXPORT по этому слою
                 // исключает грань отверстия из заливки элементами.
                 int movedHoles = MovePolylinesToHoleLayer(tr, db, holeIds, per.ObjectId);
                 var holePolys = GetHolePolygons(tr, db);
@@ -218,7 +218,7 @@ namespace MeshPlugin
             catch (System.Exception ex)
             {
                 // Транзакция не закоммичена — все изменения команды откатились.
-                ed.WriteMessage($"\nОшибка MESHQUADMESH: {ex.Message}\nИзменения команды отменены.\n");
+                ed.WriteMessage($"\nОшибка LIRBUILD: {ex.Message}\nИзменения команды отменены.\n");
             }
         }
 

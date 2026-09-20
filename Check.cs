@@ -12,20 +12,20 @@ namespace MeshPlugin
     {
         // ПРЕДВАРИТЕЛЬНАЯ ПРОВЕРКА ЧЕРТЕЖА.
         //
-        // Те же требования к входу, что проверяет MESHQUADMESH, но собранные в один
+        // Те же требования к входу, что проверяет LIRBUILD, но собранные в один
         // проход и без остановки на первом нарушении. В конвейере проверки стоят по
         // ходу дела и валят команду по одной: «контур не замкнут» → правка → запуск →
         // «стена вне плиты» → правка → запуск → «дуга в контуре». На реальном плане
-        // каждый круг стоит несколько минут. MESHCHECK выдаёт весь список сразу.
+        // каждый круг стоит несколько минут. LIRCHECK выдаёт весь список сразу.
         //
         // Команда НИЧЕГО не строит и не переносит между слоями: единственное, что она
         // добавляет в чертёж, — круги-маркеры в слое ПРОБЛЕМА (результат проверки).
-        [CommandMethod("MESHCHECK")]
+        [CommandMethod("LIRCHECK")]
         public void CheckDrawingCommand()
         {
             Document doc = Application.DocumentManager.MdiActiveDocument;
             Editor ed = doc.Editor;
-            EchoCommandStart(ed, "MESHCHECK");
+            EchoCommandStart(ed, "LIRCHECK");
             Database db = doc.Database;
 
             PromptEntityOptions peo = new PromptEntityOptions("\nВыберите контур плиты (полилинию): ");
@@ -253,7 +253,7 @@ namespace MeshPlugin
                     if (!has) { colsNoCenter++; marks.Add(PolygonCentroid(c)); }
                 }
                 if (colsNoCenter > 0)
-                    warnings.Add($"контуров пилонов без точки центра: {colsNoCenter} — запустите MESHCOLUMNCROSS");
+                    warnings.Add($"контуров пилонов без точки центра: {colsNoCenter} — запустите LIRPYLON");
 
                 // ---- 6. Задвоенные оси ----------------------------------------------
                 int dupWalls = DuplicateSegmentCount(wallSegs);
@@ -272,7 +272,7 @@ namespace MeshPlugin
                     top.Sort((a, b) => b.Value.CompareTo(a.Value));
                     var names = new List<string>();
                     for (int i = 0; i < Math.Min(5, top.Count); i++) names.Add($"{top[i].Key} ({top[i].Value})");
-                    warnings.Add($"объектов на слоях, которые построение не увидит: {total} — {string.Join(", ", names)}{(top.Count > 5 ? ", …" : "")}. Если это стены или плита — разложите их командой MESHLAYERS");
+                    warnings.Add($"объектов на слоях, которые построение не увидит: {total} — {string.Join(", ", names)}{(top.Count > 5 ? ", …" : "")}. Если это стены или плита — разложите их командой LIRLAYERS");
                 }
 
                 // ---- 8. Оценка объёма сетки ------------------------------------------
@@ -305,7 +305,7 @@ namespace MeshPlugin
                 foreach (var w2 in warnings) ed.WriteMessage($"  внимание: {w2}\n");
 
                 if (errors.Count == 0 && warnings.Count == 0)
-                    ed.WriteMessage("Замечаний нет — можно строить сетку (MESHQUADMESH).\n");
+                    ed.WriteMessage("Замечаний нет — можно строить сетку (LIRBUILD).\n");
                 else
                     ed.WriteMessage($"Итого ошибок: {errors.Count}, предупреждений: {warnings.Count}" +
                         (marks.Count > 0 ? $"; мест на чертеже отмечено кругами в слое {ProblemLayerName}: {marks.Count}" : "") +
@@ -316,12 +316,12 @@ namespace MeshPlugin
             }
             catch (System.Exception ex)
             {
-                ed.WriteMessage($"\nОшибка MESHCHECK: {ex.Message}\nИзменения команды отменены.\n");
+                ed.WriteMessage($"\nОшибка LIRCHECK: {ex.Message}\nИзменения команды отменены.\n");
             }
         }
 
         // Отрезки объекта (Line или Polyline) в общий список — чтение чертежа
-        // в MESHCHECK идёт одним проходом, и разбор одинаков для стен и дверей.
+        // в LIRCHECK идёт одним проходом, и разбор одинаков для стен и дверей.
         private void AppendSegments(Entity ent, List<Point2d[]> target)
         {
             if (ent is Line ln)
