@@ -409,18 +409,18 @@ namespace MeshPlugin
                 }
             }
 
-            // Мелкая сетка внутри отпечатка пилона. Строится своими координатами,
-            // а не общей сеткой плиты: шаг там ~100 мм, и линии обязаны пройти по
-            // граням и по оси пилона. Ячейки плиты, попавшие внутрь отпечатка,
-            // выброшены выше, а куски у грани отбрасываются по центроиду ниже, —
-            // поэтому наложения двух сеток нет.
+            // Сетка внутри отпечатка пилона. Строится ПО ЛИНИЯМ ПЛИТЫ (xs/ys),
+            // попавшим внутрь отпечатка, плюс грани и ось — так линия проходит пилон
+            // насквозь и соседняя ячейка остаётся четырёхугольником. Ячейки плиты,
+            // попавшие внутрь отпечатка, выброшены выше, а куски у грани отбрасываются
+            // по центроиду ниже, — поэтому наложения двух сеток нет.
             int pylonInnerCells = 0;
             double thinnestPylonSide = double.MaxValue;
             foreach (var r in pylonRects)
             {
                 double rx0 = r[0].X, ry0 = r[0].Y, rx1 = r[2].X, ry1 = r[2].Y;
-                var fx = BuildPylonInnerCoords(rx0, rx1);
-                var fy = BuildPylonInnerCoords(ry0, ry1);
+                var fx = BuildPylonInnerCoords(rx0, rx1, xs);
+                var fy = BuildPylonInnerCoords(ry0, ry1, ys);
 
                 for (int i = 0; i + 1 < fx.Count; i++)
                 {
@@ -442,7 +442,7 @@ namespace MeshPlugin
             }
             if (pylonInnerCells > 0)
             {
-                res.Log.Add($"\nОтпечаток пилонов: контуров {pylonRects.Count}, элементов внутри: {pylonInnerCells} (2-6 на сторону, по её размеру)\n");
+                res.Log.Add($"\nОтпечаток пилонов: контуров {pylonRects.Count}, элементов внутри: {pylonInnerCells} (по линиям сетки плиты, прошедшим сквозь пилон)\n");
                 if (thinnestPylonSide < MinElementSize)
                     res.Log.Add($"ВНИМАНИЕ: самый узкий элемент внутри пилона {thinnestPylonSide:0} мм — меньше минимального размера КЭ ({MinElementSize:0} мм). Так выходит у пилонов тоньше {2 * MinElementSize:0} мм: половина толщины и есть ширина элемента.\n");
             }
@@ -768,7 +768,7 @@ namespace MeshPlugin
             // врезка (ребро, прошедшее через узел насквозь, режется в нём), затем
             // проверка постусловия — то, что осталось непривязанным, идёт в круги
             // ПРОБЛЕМА, а не замалчивается.
-            var pylonNodes = CollectPylonOutlineNodes(pylonRects);
+            var pylonNodes = CollectPylonOutlineNodes(pylonRects, xs, ys);
             var unlinkedPylonNodes = new List<Point2d>();
             if (pylonNodes.Count > 0)
             {

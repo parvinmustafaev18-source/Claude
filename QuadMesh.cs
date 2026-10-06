@@ -1063,14 +1063,16 @@ namespace MeshPlugin
 
         // Узлы контура пилона: углы плюс точки мелкой сетки на его гранях. Ровно этими
         // точками отпечаток обязан войти в сетку плиты.
-        private List<Point2d> CollectPylonOutlineNodes(List<List<Point2d>> rects)
+        private List<Point2d> CollectPylonOutlineNodes(List<List<Point2d>> rects, List<double> xs, List<double> ys)
         {
             var pts = new List<Point2d>();
             foreach (var r in rects)
             {
                 double[] b = PolyBbox(r);
-                var fx = BuildPylonInnerCoords(b[0], b[2]);
-                var fy = BuildPylonInnerCoords(b[1], b[3]);
+                // Те же координаты, что у мелкой сетки внутри: узлы на гранях обязаны
+                // совпасть с её линиями, иначе врезка в плиту пойдёт не в те точки.
+                var fx = BuildPylonInnerCoords(b[0], b[2], xs);
+                var fy = BuildPylonInnerCoords(b[1], b[3], ys);
 
                 foreach (var x in fx)
                 {
@@ -1427,30 +1429,43 @@ namespace MeshPlugin
             return result;
         }
 
-        // Координаты мелкой сетки внутри отпечатка по одной оси. Каждая половина (от
-        // грани до оси пилона) делится на равные части, поэтому и ГРАНИ, и ОСЬ всегда
-        // остаются линиями сетки: ось обязана быть ребром — по ней экспорт режет
-        // пластину, а центральный узел пилона терять нельзя. Отсюда и чётность: частей
-        // на сторону всегда 2, 4 или 6, нечётное деление убрало бы центральную линию.
+        // Координаты сетки внутри отпечатка пилона по одной оси.
         //
-        // Число частей выбирается по РАЗМЕРУ стороны, а не по шагу (пороги и причина —
-        // в MeshTol). Прежний шаг 100 мм дробил крупные пилоны на десятки элементов,
-        // расчёту не нужных.
-        private List<double> BuildPylonInnerCoords(double a, double b)
+        // Берутся ЛИНИИ СЕТКИ ПЛИТЫ, попавшие внутрь отпечатка (06.10.2026). До этого
+        // внутренность делилась своими равными частями, независимо от плиты: узлы
+        // внутри почти никогда не совпадали с продолжением соседних линий, и ячейки
+        // вокруг пилона приходилось резать на треугольники — те самые вееры. Теперь
+        // линия плиты проходит пилон насквозь, а соседняя ячейка остаётся
+        // четырёхугольником.
+        //
+        // Обязательны при любом раскладе обе ГРАНИ и ЦЕНТР: ось обязана быть ребром —
+        // по ней экспорт режет пластину, а центральный узел пилона терять нельзя.
+        // Линия плиты, подошедшая к грани или к центру ближе MinElementSize, НЕ
+        // берётся: она дала бы лепесток тоньше минимального элемента. Поэтому у
+        // пилона уже шага сетки остаётся ровно прежнее деление — грани, центр.
+        //
+        // Элементы внутри получаются неравными — это плата за прямые линии и она
+        // осознанная: равные элементы ценой веера вокруг пилона хуже для схемы.
+        private List<double> BuildPylonInnerCoords(double a, double b, List<double> grid)
         {
-            var result = new List<double>();
             double c = (a + b) / 2.0;
-            double half = (b - a) / 2.0;
-            double side = b - a;
+            var result = new List<double> { a, c, b };
 
-            int n = side < MeshTol.PylonSideSmall ? 1
-                  : side < MeshTol.PylonSideLarge ? 2 : 3;
-            double step = half / n;
+            if (grid != null)
+            {
+                foreach (double g in grid)
+                {
+                    if (g <= a || g >= b) continue;
 
-            for (int i = 0; i < n; i++) result.Add(a + step * i);
-            result.Add(c);
-            for (int i = 1; i < n; i++) result.Add(c + step * i);
-            result.Add(b);
+                    bool tooClose = false;
+                    foreach (double v in result)
+                        if (Math.Abs(g - v) < MeshTol.MinElementSize) { tooClose = true; break; }
+
+                    if (!tooClose) result.Add(g);
+                }
+            }
+
+            result.Sort();
             return result;
         }
 
