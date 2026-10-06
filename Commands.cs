@@ -65,9 +65,9 @@ namespace MeshPlugin
             new HelpLine("     ", "LIRHELP", "этот список: в консоль и в чертёж, слой " + HelpLayerName),
             new HelpLine(""),
             new HelpLine("Порядок не формальность: каждая команда читает слои, созданные предыдущей."),
-            new HelpLine("LIRLAYERS идёт ПОСЛЕ построения: LIRBUILD рисует сетку на текущем слое,"),
-            new HelpLine("а экспорт берёт линии только из LINE_TRIANGULATION. Толщина плиты"),
-            new HelpLine("спрашивается там же и уходит в имя слоя контура."),
+            new HelpLine("Сетку LIRBUILD сам кладёт в LINE_TRIANGULATION — текущий слой чертежа"),
+            new HelpLine("значения не имеет. От LIRLAYERS экспорту нужен контур плиты в слое"),
+            new HelpLine("FOUNDATION_SLABS(H-...): толщина спрашивается там и уходит в имя слоя."),
             new HelpLine("Круги в слое ПРОБЛЕМА — места, из-за которых построение остановилось;"),
             new HelpLine("исправьте их и повторите. Единицы чертежа — миллиметры, дуги в контурах"),
             new HelpLine("не допускаются."),
@@ -1432,6 +1432,24 @@ namespace MeshPlugin
             ltr.Color = Autodesk.AutoCAD.Colors.Color.FromColorIndex(Autodesk.AutoCAD.Colors.ColorMethod.ByAci, colorIndex);
             lt.Add(ltr);
             tr.AddNewlyCreatedDBObject(ltr, true);
+        }
+
+        // Слой выключен, заморожен или заблокирован — записанное в него в чертеже не
+        // видно. Для сетки это особенно обидно: команда отработала, отчёт напечатан,
+        // а на экране пусто, и выглядит это как «плагин ничего не построил».
+        private void WarnLayerHidden(Transaction tr, Database db, Editor ed, string layerName)
+        {
+            LayerTable lt = (LayerTable)tr.GetObject(db.LayerTableId, OpenMode.ForRead);
+            if (!lt.Has(layerName)) return;
+
+            LayerTableRecord ltr = (LayerTableRecord)tr.GetObject(lt[layerName], OpenMode.ForRead);
+            var why = new List<string>();
+            if (ltr.IsOff) why.Add("выключен");
+            if (ltr.IsFrozen) why.Add("заморожен");
+            if (ltr.IsLocked) why.Add("заблокирован");
+            if (why.Count == 0) return;
+
+            ed.WriteMessage($"\nВНИМАНИЕ: слой {layerName} {string.Join(" и ", why)} — построенное в чертеже не увидите.\n");
         }
 
 

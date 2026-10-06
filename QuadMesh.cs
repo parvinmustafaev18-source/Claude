@@ -107,6 +107,23 @@ namespace MeshPlugin
                 var doorEnds = GetDoorEndpoints(tr, db); // косяки дверных проёмов — узлы сетки
                 ed.WriteMessage($"\nНайдено сегментов стен: {wallSegments.Count}, подвинуто к узлам сетки (до {WallSnapTolerance:0} мм): {snappedWalls}\n");
 
+                // Столько стен на плане не бывает — почти наверняка на слое стен
+                // лежит сетка прошлого построения. Дальше идут этапы, где каждая
+                // стена перебирается против каждого узла: на таком входе AutoCAD
+                // встаёт на часы, и пользователь видит не ошибку, а зависание.
+                // Выход БЕЗ Commit: снап стен и пилонов откатится, чертёж цел.
+                if (wallSegments.Count > WallSegmentsSanityLimit)
+                {
+                    ed.WriteMessage(
+                        $"\n[СТОП] Сегментов стен {wallSegments.Count} при разумном пределе {WallSegmentsSanityLimit}.\n" +
+                        $"Столько стен на плане не бывает. Обычная причина: на слое {WallLayerPrefix}...) лежат\n" +
+                        "линии сетки от прошлого построения — тогда расчёт длится часами и AutoCAD выглядит зависшим.\n" +
+                        "Что сделать: быстрый выбор (QSELECT) по слою стен с типом \"Отрезок\" покажет лишние линии,\n" +
+                        "их нужно удалить; построенная сетка должна лежать в слое " + TriangulationLayerName + ".\n" +
+                        "Построение остановлено, чертёж не изменён.\n");
+                    return;
+                }
+
                 // Пилоны (слой COLUMNS): контур пилона врезается в сетку как стены,
                 // внутренность пилона остаётся пустой — только точка в центре.
                 int snappedColumns = SnapColumnsToGrid(tr, db, minX, minY, cellSize);
@@ -197,9 +214,19 @@ namespace MeshPlugin
                 }
 
                 // ---- ОТРИСОВКА ------------------------------------------------------
+                // Сетка рисуется СРАЗУ в слой линий триангуляции, а не на текущий слой
+                // чертежа (так было до 06.10.2026). Текущим слоем легко оказывается слой
+                // стен — тогда следующий LIRBUILD читал бы собственную сетку как стены и
+                // вставал намертво. Заодно экспорт видит сетку сразу: он берёт линии
+                // только из этого слоя, и раньше без LIRLAYERS после построения не
+                // находил ничего.
+                EnsureLayer(db, tr, TriangulationLayerName, PickRandomColor(new Random(), GetUsedLayerColors(db, tr)));
+                WarnLayerHidden(tr, db, ed, TriangulationLayerName);
+
                 BlockTableRecord btr = (BlockTableRecord)tr.GetObject(db.CurrentSpaceId, OpenMode.ForWrite);
                 foreach (var seg in mesh.Segments)
                     DrawSegment(btr, tr, seg[0], seg[1]);
+                ed.WriteMessage($"\nОтрезков сетки нарисовано в слое {TriangulationLayerName}: {mesh.Segments.Count}\n");
 
                 // Контур пилона разбивается на отрезки и переносится в слой линий
                 // триангуляции (полилиния удаляется, точка центра остаётся в COLUMNS).
@@ -1428,9 +1455,13 @@ namespace MeshPlugin
         }
 
 
+        // Слой назначается явно: на текущем слое чертежа сетка не должна оказаться
+        // никогда (там её прочитает как стены следующий LIRBUILD), а экспорт берёт
+        // линии ТОЛЬКО из слоя триангуляции. Слой заводится перед циклом отрисовки.
         private void DrawSegment(BlockTableRecord btr, Transaction tr, Point2d a, Point2d b)
         {
             Line line = new Line(new Point3d(a.X, a.Y, 0), new Point3d(b.X, b.Y, 0));
+            line.Layer = TriangulationLayerName;
             btr.AppendEntity(line);
             tr.AddNewlyCreatedDBObject(line, true);
         }
