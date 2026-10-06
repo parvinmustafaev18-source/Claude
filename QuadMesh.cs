@@ -1432,6 +1432,10 @@ namespace MeshPlugin
         // остаются линиями сетки: ось обязана быть ребром — по ней экспорт режет
         // пластину, а центральный узел пилона терять нельзя. Число частей — floor, а не
         // round: round(150/100)=2 дал бы элементы по 75 мм, вдвое меньше минимального.
+        //
+        // Сверху число частей ограничено (PylonInnerMaxParts): на крупном пилоне шаг
+        // 100 мм давал десятки лишних КЭ без всякой пользы для расчёта. Снизу работает
+        // прежнее правило, поэтому мелкие пилоны не меняются вовсе.
         private List<double> BuildPylonInnerCoords(double a, double b)
         {
             var result = new List<double>();
@@ -1440,6 +1444,7 @@ namespace MeshPlugin
 
             int n = (int)Math.Floor(half / MeshTol.PylonInnerCell);
             if (n < 1) n = 1;
+            if (n > MeshTol.PylonInnerMaxParts) n = MeshTol.PylonInnerMaxParts;
             double step = half / n;
 
             for (int i = 0; i < n; i++) result.Add(a + step * i);
