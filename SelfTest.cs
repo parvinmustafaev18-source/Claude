@@ -202,7 +202,7 @@ namespace MeshPlugin
                 ed.WriteMessage($"Не провал, к сведению: узлов без элементов (убираются Упаковкой схемы в ЛИРЕ): {unusedNodes}\n");
 
             if (shortEdgeCases > 0)
-                ed.WriteMessage($"Не провал, к сведению: рёбра короче {MeshTol.MinElementSize:0} мм встретились в {shortEdgeCases} планах (обычная причина — пилон тоньше {2 * MeshTol.PylonInnerCell:0} мм).\n");
+                ed.WriteMessage($"Не провал, к сведению: рёбра короче {MeshTol.MinElementSize:0} мм встретились в {shortEdgeCases} планах (обычная причина — пилон тоньше {2 * MeshTol.MinElementSize:0} мм).\n");
 
             if (rotationChecked > 0)
                 ed.WriteMessage($"Наблюдение (не проверка): поворот плана на 90° дал столько же рёбер в {rotationSame} случаях из {rotationChecked}.\n");

@@ -442,9 +442,9 @@ namespace MeshPlugin
             }
             if (pylonInnerCells > 0)
             {
-                res.Log.Add($"\nОтпечаток пилонов: контуров {pylonRects.Count}, мелких элементов внутри: {pylonInnerCells} (шаг ~{MeshTol.PylonInnerCell:0} мм)\n");
+                res.Log.Add($"\nОтпечаток пилонов: контуров {pylonRects.Count}, элементов внутри: {pylonInnerCells} (2-6 на сторону, по её размеру)\n");
                 if (thinnestPylonSide < MinElementSize)
-                    res.Log.Add($"ВНИМАНИЕ: самый узкий элемент внутри пилона {thinnestPylonSide:0} мм — меньше минимального размера КЭ ({MinElementSize:0} мм). Так выходит у пилонов тоньше {2 * MeshTol.PylonInnerCell:0} мм: половина толщины и есть ширина элемента.\n");
+                    res.Log.Add($"ВНИМАНИЕ: самый узкий элемент внутри пилона {thinnestPylonSide:0} мм — меньше минимального размера КЭ ({MinElementSize:0} мм). Так выходит у пилонов тоньше {2 * MinElementSize:0} мм: половина толщины и есть ширина элемента.\n");
             }
 
             res.Log.Add($"\nПостроено квадратных элементов: {quadCells.Count}, ячеек у стен: {wallCells.Count}\n");
