@@ -98,6 +98,19 @@ namespace MeshPlugin
                 var bb = PolygonBBox(contourPts);
                 double minX = bb[0], minY = bb[1];
 
+                // Сетка прошлого запуска стирается, иначе повторное построение кладёт
+                // поверх вторую копию: чертёж тяжелеет с каждым прогоном, а экспорт
+                // получает наложенные пластины. Стираются только свои отрезки (метка
+                // XData), чужое в слое триангуляции остаётся. Место выбрано ПОСЛЕ
+                // проверки контура: при отказе валидации транзакция коммитится, и
+                // стирание раньше этой строки унесло бы прошлую сетку ни за что.
+                // Жёсткие правила, которые ниже, завершаются tr.Abort() — там сетка
+                // вернётся вместе со всем остальным.
+                EnsureRegApp(db, tr, MeshXDataApp);
+                int erasedMesh = EraseOwnMesh(tr, db);
+                if (erasedMesh > 0)
+                    ed.WriteMessage($"\nСтёрта сетка прошлого построения: {erasedMesh} отрезков\n");
+
                 // ---- ЧТЕНИЕ ЧЕРТЕЖА -------------------------------------------------
                 // Снап двигает объекты чертежа к линиям сетки, поэтому он живёт здесь,
                 // а не в расчётном ядре: ядро чертежа не видит вовсе.
@@ -1464,6 +1477,14 @@ namespace MeshPlugin
             line.Layer = TriangulationLayerName;
             btr.AppendEntity(line);
             tr.AddNewlyCreatedDBObject(line, true);
+
+            // Метка «это сетка LIRBUILD» — по ней следующий запуск узнает свои отрезки
+            // и сотрёт их, не трогая чужого в том же слое. Ставится ПОСЛЕ добавления
+            // в чертёж: у объекта вне базы XData не держится. ResultBuffer обязателен
+            // к освобождению: на десятках тысяч отрезков неосвобождённые буферы — это
+            // неуправляемая память, которую AutoCAD держит до сборки мусора.
+            using (var rb = new ResultBuffer(new TypedValue((int)DxfCode.ExtendedDataRegAppName, MeshXDataApp)))
+                line.XData = rb;
         }
 
         private void AddQuadSegments(List<Point2d[]> segments, Point2d[] quad)

@@ -66,7 +66,8 @@ namespace MeshPlugin
             new HelpLine(""),
             new HelpLine("Порядок не формальность: каждая команда читает слои, созданные предыдущей."),
             new HelpLine("Сетку LIRBUILD сам кладёт в LINE_TRIANGULATION — текущий слой чертежа"),
-            new HelpLine("значения не имеет. От LIRLAYERS экспорту нужен контур плиты в слое"),
+            new HelpLine("значения не имеет; повторный запуск заменяет прежнюю сетку, а не кладёт"),
+            new HelpLine("вторую поверх. От LIRLAYERS экспорту нужен контур плиты в слое"),
             new HelpLine("FOUNDATION_SLABS(H-...): толщина спрашивается там и уходит в имя слоя."),
             new HelpLine("Круги в слое ПРОБЛЕМА — места, из-за которых построение остановилось;"),
             new HelpLine("исправьте их и повторите. Единицы чертежа — миллиметры, дуги в контурах"),
@@ -1432,6 +1433,47 @@ namespace MeshPlugin
             ltr.Color = Autodesk.AutoCAD.Colors.Color.FromColorIndex(Autodesk.AutoCAD.Colors.ColorMethod.ByAci, colorIndex);
             lt.Add(ltr);
             tr.AddNewlyCreatedDBObject(ltr, true);
+        }
+
+        // Без записи в таблицу RegApp метка XData к объекту не привяжется — молча,
+        // без ошибки. Поэтому вызывается до первой отрисовки.
+        private void EnsureRegApp(Database db, Transaction tr, string appName)
+        {
+            RegAppTable rat = (RegAppTable)tr.GetObject(db.RegAppTableId, OpenMode.ForRead);
+            if (rat.Has(appName)) return;
+
+            rat.UpgradeOpen();
+            RegAppTableRecord ratr = new RegAppTableRecord();
+            ratr.Name = appName;
+            rat.Add(ratr);
+            tr.AddNewlyCreatedDBObject(ratr, true);
+        }
+
+        // Сетка прошлого построения. Стираются только СВОИ отрезки: метка XData плюс
+        // слой триангуляции. Всё прочее в этом слое — линии, разложенные LIRLAYERS, и
+        // контуры пилонов из ExplodeColumnContours — остаётся: их исходные полилинии
+        // уже удалены, и восстановить их было бы неоткуда. Сетка, построенная версией
+        // до 06.10.2026, метки не имеет: её один раз придётся удалить вручную.
+        private int EraseOwnMesh(Transaction tr, Database db)
+        {
+            BlockTableRecord ms = (BlockTableRecord)tr.GetObject(db.CurrentSpaceId, OpenMode.ForRead);
+            var own = new List<ObjectId>();
+
+            foreach (ObjectId id in ms)
+            {
+                Entity ent = tr.GetObject(id, OpenMode.ForRead) as Entity;
+                if (ent == null || ent.Layer != TriangulationLayerName) continue;
+
+                using (ResultBuffer rb = ent.GetXDataForApplication(MeshXDataApp))
+                    if (rb != null) own.Add(id);
+            }
+
+            foreach (ObjectId id in own)
+            {
+                Entity ent = (Entity)tr.GetObject(id, OpenMode.ForWrite);
+                ent.Erase();
+            }
+            return own.Count;
         }
 
         // Слой выключен, заморожен или заблокирован — записанное в него в чертеже не

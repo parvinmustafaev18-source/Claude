@@ -120,6 +120,13 @@ namespace MeshPlugin
         // Линии готовой сетки.
         private const string TriangulationLayerName = "LINE_TRIANGULATION";
 
+        // Метка XData на отрезках, нарисованных LIRBUILD. Нужна, чтобы повторный
+        // запуск стирал ТОЛЬКО свою прошлую сетку: в LINE_TRIANGULATION лежит и
+        // чужое — линии, разложенные LIRLAYERS, и контуры пилонов из
+        // ExplodeColumnContours (их исходная полилиния удалена, восстановить
+        // неоткуда). Имя приложения XData: до 31 знака, без пробелов.
+        private const string MeshXDataApp = "MESHPLUGIN_GRID";
+
         // Контуры отверстий/проёмов в плите: внутри сетки нет.
         private const string HoleLayerName = "MESH_HOLES";
 

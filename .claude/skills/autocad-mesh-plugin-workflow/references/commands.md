@@ -26,7 +26,7 @@ LIRPYLON → (LIRWALLJOIN) → LIRCHECK → LIRBUILD → LIREXPORT.
 | LIRWALLAXIS | Commands.cs:310 | замкнутые контуры стен | ось между серединами торцов → `WALLS(H-t)`, контур цел |
 | LIRWALLJOIN | Commands.cs:413 | отрезки, макс. зазор (500) | продление до пересечения + слияние коллинеарных |
 | LIRPYLON | Commands.cs:607 | замкнутые контуры пилонов | одна ось в `WALLS(H-t PILON)`, контур → `MESH_PYLONS` |
-| LIRBUILD | QuadMesh.cs:13 | контур плиты, шаг (300/400/500), контуры отверстий | сетка линиями в `LINE_TRIANGULATION` |
+| LIRBUILD | QuadMesh.cs:13 | контур плиты, шаг (300/400/500), контуры отверстий | сетка линиями в `LINE_TRIANGULATION`; повтор заменяет свою прошлую сетку |
 | LIRCHECK | Check.cs:23 | контур плиты, шаг (300) | список всех замечаний по чертежу + круги в `ПРОБЛЕМА`; ничего не строит |
 | LIREXPORT | LiraExport.cs:18 | — | .txt для ЛИРА-САПР (расчёт — `BuildExportCore`, ExportCore.cs; см. skill `lira-sapr-mesh-export`) |
 
