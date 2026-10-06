@@ -195,6 +195,7 @@ namespace MeshPlugin
                     HolePolys = holePolys,
                     PylonRects = pylonRects,
                     PylonCrosses = GetPylonCrossConstraints(tr, db),
+                    FixedWallSegments = GetWallSegments(tr, db, true),
                     JambXs = jambXs,
                     JambYs = jambYs,
                     AxisXs = axisXs,

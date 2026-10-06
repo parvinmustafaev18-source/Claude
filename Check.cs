@@ -60,6 +60,7 @@ namespace MeshPlugin
                 var errors = new List<string>();    // построение не пройдёт или даст мусор
                 var warnings = new List<string>();  // строить можно, но посмотреть стоит
                 var marks = new List<ProblemMark>();  // круги ПРОБЛЕМА с подписью причины
+                int fixedObjects = 0;                 // закреплённые оси: построение их не двигает
 
                 EraseMarksOnLayer(tr, db, ProblemLayerName);
 
@@ -177,6 +178,7 @@ namespace MeshPlugin
 
                     if (IsWallLayer(layer))
                     {
+                        if (IsFixedLayer(layer)) fixedObjects++;
                         AppendSegments(ent, wallSegs);
                         continue;
                     }
@@ -310,6 +312,8 @@ namespace MeshPlugin
                 ed.WriteMessage("\n=== ПРОВЕРКА ЧЕРТЕЖА ===\n");
                 foreach (var e in errors) ed.WriteMessage($"  ОШИБКА: {e}\n");
                 foreach (var w2 in warnings) ed.WriteMessage($"  внимание: {w2}\n");
+                if (fixedObjects > 0)
+                    ed.WriteMessage($"  закреплено осей: {fixedObjects} — построение их не двигает, линию сетки ставит на них\n");
 
                 if (errors.Count == 0 && warnings.Count == 0)
                     ed.WriteMessage("Замечаний нет — можно строить сетку (LIRBUILD).\n");
