@@ -139,6 +139,15 @@ namespace MeshPlugin
         private const string WallLayerPrefix = "WALLS(H-";
         private const string PylonMarker = "PILON";
 
+        // Закреплённый объект: WALLS(H-200 FIX), COLUMNS(... FIX). Такую геометрию
+        // построение НЕ двигает — вместо подтяжки объекта к сетке на него ставится
+        // линия сетки (жёсткая цель). Метка суффиксом в имени слоя, а не XData:
+        // слой виден в диспетчере, красится в свой цвет и выделяется рамкой, тогда
+        // как невидимое состояние через месяц не объяснить («почему эта стена не
+        // двигается, а соседняя двигается?»). Пробел перед FIX обязателен — иначе
+        // под правило попал бы слой с именем вроде FIXTURES.
+        private const string FixMarker = "FIX";
+
         // Дверные проёмы: WALL_DOORS(H-<высота>). Проверка намеренно широкая (без
         // "H-"): слой без высоты всё равно обязан считаться дверным и защищаться от
         // LIRLAYERS, а высота при разборе имени получает значение по
@@ -220,6 +229,28 @@ namespace MeshPlugin
         private static bool IsWallLayer(string layer)
         {
             return !string.IsNullOrEmpty(layer) && layer.StartsWith(WallLayerPrefix);
+        }
+
+        // Закреплённый объект: построение не двигает его геометрию.
+        private static bool IsFixedLayer(string layer)
+        {
+            return !string.IsNullOrEmpty(layer)
+                && layer.IndexOf(" " + FixMarker, StringComparison.Ordinal) >= 0;
+        }
+
+        // Имя слоя с меткой закрепления и без неё: " FIX" вставляется перед закрывающей
+        // скобкой, чтобы имя осталось читаемым — WALLS(H-200) -> WALLS(H-200 FIX).
+        private static string AddFixMarker(string layer)
+        {
+            if (IsFixedLayer(layer)) return layer;
+            int close = layer.LastIndexOf(')');
+            return close < 0 ? layer + " " + FixMarker
+                             : layer.Substring(0, close) + " " + FixMarker + layer.Substring(close);
+        }
+
+        private static string RemoveFixMarker(string layer)
+        {
+            return IsFixedLayer(layer) ? layer.Replace(" " + FixMarker, "") : layer;
         }
 
         // Ось пилона-пластины: стена с суффиксом PILON.

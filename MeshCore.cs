@@ -30,6 +30,10 @@ namespace MeshPlugin
         public List<List<Point2d>> PylonRects = new List<List<Point2d>>();   // MESH_PYLONS: мелкая сетка
         public List<Point2d[]> PylonCrosses = new List<Point2d[]>();         // поперечные оси пилонов
 
+        // Закреплённые оси (слой с меткой FIX): их НЕ двигали к сетке, поэтому сетка
+        // идёт к ним — координаты прямых участков становятся жёсткими целями.
+        public List<Point2d[]> FixedWallSegments = new List<Point2d[]>();
+
         // Мягкие цели выравнивания линий сетки: косяки дверей и оси пилонов-пластин.
         public List<double> JambXs = new List<double>();
         public List<double> JambYs = new List<double>();
@@ -278,12 +282,27 @@ namespace MeshPlugin
             colXs.AddRange(input.AxisXs);
             colYs.AddRange(input.AxisYs);
 
+            // Закреплённые оси: объект не двигали, поэтому линия сетки обязана сесть
+            // ровно на него — иначе ось режет ячейки в произвольном месте и даёт те же
+            // лепестки и вееры, ради которых снап и вводился. Цель жёсткая, как кромка
+            // отверстия: ближайшая линия двигается, а если далеко — вставляется новая.
+            // Берутся только прямые участки: у наклонной оси координаты нет, там сетка
+            // просто режется по стене.
+            int fixedTargets = 0;
+            foreach (var w in input.FixedWallSegments)
+            {
+                if (Math.Abs(w[0].X - w[1].X) < MeshTol.NodeMerge) { holeXs.Add(w[0].X); fixedTargets++; }
+                else if (Math.Abs(w[0].Y - w[1].Y) < MeshTol.NodeMerge) { holeYs.Add(w[0].Y); fixedTargets++; }
+            }
+            if (input.FixedWallSegments.Count > 0)
+                res.Log.Add($"\nЗакреплённых осей (слой с меткой {FixMarker}): {input.FixedWallSegments.Count} — не двигались; из них прямых, на которые ставится линия сетки: {fixedTargets}\n");
+
             var xs = BuildGridCoords(minX, maxX, cellSize, colXs, holeXs, out int shiftedX, out int insertedX, out int rejectedX, out int splitX);
             var ys = BuildGridCoords(minY, maxY, cellSize, colYs, holeYs, out int shiftedY, out int insertedY, out int rejectedY, out int splitY);
             if (shiftedX + shiftedY > 0)
                 res.Log.Add($"\nЛиний сетки смещено к граням пилонов/кромкам отверстий/косякам: {shiftedX + shiftedY}\n");
             if (insertedX + insertedY > 0)
-                res.Log.Add($"\nЛиний сетки добавлено по кромкам отверстий: {insertedX + insertedY}\n");
+                res.Log.Add($"\nЛиний сетки добавлено по кромкам отверстий и закреплённым осям: {insertedX + insertedY}\n");
             if (splitX + splitY > 0)
                 res.Log.Add($"\nЛиний сетки добавлено, чтобы ячейка не превысила {cellSize * MeshTol.MaxCellFactor:0} мм (шаг + {(MeshTol.MaxCellFactor - 1.0) * 100:0}%): {splitX + splitY}\n");
             if (rejectedX + rejectedY > 0)

@@ -60,6 +60,7 @@ namespace MeshPlugin
             new HelpLine(""),
             new HelpLine("По желанию:"),
             new HelpLine("     ", "LIRDOORS", "дверные проёмы; чертить ДО LIRBUILD"),
+            new HelpLine("     ", "LIRFIX", "закрепить оси: построение их не двигает"),
             new HelpLine("     ", "LIRCHECK", "проверить план перед построением; чертёж не меняется"),
             new HelpLine("     ", "LIRVERSION", "версия плагина и время сборки"),
             new HelpLine("     ", "LIRHELP", "этот список: в консоль и в чертёж, слой " + HelpLayerName),
@@ -460,6 +461,86 @@ namespace MeshPlugin
             catch (System.Exception ex)
             {
                 ed.WriteMessage($"\nОшибка LIRWALLS: {ex.Message}\nИзменения команды отменены.\n");
+            }
+        }
+
+        // Закрепление геометрии: выбранные оси стен и контуры пилонов переезжают в
+        // слой с меткой FIX, и построение перестаёт их двигать к линиям сетки —
+        // наоборот, линия сетки садится на них жёсткой целью. Ключ Unfix снимает
+        // метку. Метка живёт в имени слоя, а не в XData: так она видна в диспетчере
+        // слоёв, красится своим цветом и выделяется рамкой.
+        [CommandMethod("LIRFIX")]
+        public void FixGeometryCommand()
+        {
+            Document doc = Application.DocumentManager.MdiActiveDocument;
+            Editor ed = doc.Editor;
+            EchoCommandStart(ed, "LIRFIX");
+            Database db = doc.Database;
+
+            PromptKeywordOptions pko = new PromptKeywordOptions("\nЗакрепить выбранное или снять закрепление");
+            pko.Keywords.Add("Fix");
+            pko.Keywords.Add("Unfix");
+            pko.Keywords.Default = "Fix";
+            PromptResult pkr = ed.GetKeywords(pko);
+            if (pkr.Status != PromptStatus.OK) return;
+            bool fix = pkr.StringResult != "Unfix";
+
+            PromptSelectionOptions pso = new PromptSelectionOptions();
+            pso.MessageForAdding = fix
+                ? "\nВыберите оси стен и контуры пилонов, которые нельзя двигать: "
+                : "\nВыберите закреплённые объекты, с которых снять закрепление: ";
+            PromptSelectionResult psr = ed.GetSelection(pso);
+            if (psr.Status != PromptStatus.OK)
+            {
+                ed.WriteMessage("\nВыбор отменён.\n");
+                return;
+            }
+
+            var rnd = new Random();
+
+            try
+            {
+            using (Transaction tr = db.TransactionManager.StartTransaction())
+            {
+                var usedColors = GetUsedLayerColors(db, tr);
+
+                int moved = 0, already = 0, skipped = 0;
+
+                foreach (SelectedObject so in psr.Value)
+                {
+                    Entity ent = tr.GetObject(so.ObjectId, OpenMode.ForWrite) as Entity;
+                    if (ent == null) continue;
+
+                    // Закреплять имеет смысл только то, что построение вообще двигает:
+                    // оси стен (включая пилоны-пластины) и контуры пилонов.
+                    if (!IsWallLayer(ent.Layer) && !IsColumnLayer(ent.Layer)) { skipped++; continue; }
+
+                    if (IsFixedLayer(ent.Layer) == fix) { already++; continue; }
+
+                    string target = fix ? AddFixMarker(ent.Layer) : RemoveFixMarker(ent.Layer);
+                    EnsureLayer(db, tr, target, PickRandomColor(rnd, usedColors));
+                    ent.Layer = target;
+                    moved++;
+                }
+
+                ed.WriteMessage(fix
+                    ? $"\nЗакреплено объектов: {moved}"
+                    : $"\nЗакрепление снято с объектов: {moved}");
+                if (already > 0)
+                    ed.WriteMessage($", уже в нужном состоянии: {already}");
+                if (skipped > 0)
+                    ed.WriteMessage($", пропущено (не стена и не пилон): {skipped}");
+                ed.WriteMessage("\n");
+
+                if (fix && moved > 0)
+                    ed.WriteMessage($"Закреплённые оси LIRBUILD не двигает: вместо подтяжки оси к сетке линия сетки ставится на ось.\n");
+
+                tr.Commit();
+            }
+            }
+            catch (System.Exception ex)
+            {
+                ed.WriteMessage($"\nОшибка LIRFIX: {ex.Message}\nИзменения команды отменены.\n");
             }
         }
 
@@ -1244,6 +1325,7 @@ namespace MeshPlugin
             {
                 Entity ent = tr.GetObject(id, OpenMode.ForRead) as Entity;
                 if (ent == null || !IsColumnLayer(ent.Layer)) continue;
+                if (IsFixedLayer(ent.Layer)) continue;   // закреплённый пилон не двигаем
                 Polyline pl = ent as Polyline;
                 if (pl == null || !pl.Closed) continue;
                 plineIds.Add(id);
@@ -1587,6 +1669,10 @@ namespace MeshPlugin
                 // Оси пилона-креста не двигаем: сдвиг длинной оси разорвал бы крест
                 // (короткая ось в LINE_TRIANGULATION не снапится) и увёл бы центр.
                 if (IsPylonLayer(ent.Layer)) continue;
+                // Закреплённая ось (слой с меткой FIX) неприкосновенна: инженер
+                // поставил её по осям здания. К сетке её не тянем — наоборот, линию
+                // сетки ставим на неё жёсткой целью, это делает BuildMeshCore.
+                if (IsFixedLayer(ent.Layer)) continue;
 
                 Line line = ent as Line;
                 if (line != null)
@@ -1779,7 +1865,9 @@ namespace MeshPlugin
 
 
         // Собирает отрезки стен со всех слоёв WALLS(H-...), созданных командой LIRWALLS.
-        private List<Point2d[]> GetWallSegments(Transaction tr, Database db)
+        // fixedOnly — только закреплённые оси (слой с меткой FIX): по ним строятся
+        // жёсткие цели сетки, чтобы линия села точно на ось, а сама ось не двигалась.
+        private List<Point2d[]> GetWallSegments(Transaction tr, Database db, bool fixedOnly = false)
         {
             var result = new List<Point2d[]>();
             BlockTableRecord btr = (BlockTableRecord)tr.GetObject(db.CurrentSpaceId, OpenMode.ForRead);
@@ -1789,6 +1877,7 @@ namespace MeshPlugin
                 Entity ent = tr.GetObject(id, OpenMode.ForRead) as Entity;
                 if (ent == null) continue;
                 if (!IsWallLayer(ent.Layer)) continue;
+                if (fixedOnly && !IsFixedLayer(ent.Layer)) continue;   // без фильтра идут ВСЕ стены, включая закреплённые
 
                 Line line = ent as Line;
                 if (line != null)
