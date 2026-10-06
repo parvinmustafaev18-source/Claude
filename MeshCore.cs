@@ -49,10 +49,10 @@ namespace MeshPlugin
     internal class MeshResult
     {
         public bool Ok;                                                  // false — нарушено жёсткое правило
-        public List<Point2d> ErrorPts = new List<Point2d>();             // места нарушения — круги ПРОБЛЕМА
+        public List<ProblemMark> ErrorPts = new List<ProblemMark>();     // места нарушения — круги ПРОБЛЕМА с подписью
         public List<string> Log = new List<string>();                    // то, что раньше шло в ed.WriteMessage
         public List<Point2d[]> Segments = new List<Point2d[]>();         // итоговые линии сетки
-        public List<Point2d> ProblemPts = new List<Point2d>();           // проблемные места сетки
+        public List<ProblemMark> ProblemPts = new List<ProblemMark>();   // проблемные места сетки, с подписью
 
         public int FailedPolygons;        // не удалось триангулировать
         public int UnlinkedPylonNodes;    // узлы контура пилона вне сетки
@@ -98,7 +98,7 @@ namespace MeshPlugin
             if (outsideWalls.Count > 0)
             {
                 res.Log.Add($"\nОшибка: сегменты стен выходят за контур фундаментной плиты ({outsideWalls.Count} шт.), середины: {string.Join(", ", outsideWalls)}. Стена обязана целиком лежать в пределах плиты. Команда остановлена, чертёж не изменён. Проблемные места отмечены кругами в слое {ProblemLayerName}.\n");
-                res.ErrorPts = outsideWallPts;
+                res.ErrorPts = ProblemMark.From(outsideWallPts, "стена вне плиты");
                 return res;
             }
 
@@ -117,7 +117,7 @@ namespace MeshPlugin
             if (outsideColumns.Count > 0)
             {
                 res.Log.Add($"\nОшибка: пилоны выходят за контур фундаментной плиты ({outsideColumns.Count} шт.), центры: {string.Join(", ", outsideColumns)}. Пилон обязан целиком лежать в пределах плиты. Команда остановлена, чертёж не изменён. Проблемные места отмечены кругами в слое {ProblemLayerName}.\n");
-                res.ErrorPts = outsideColumnPts;
+                res.ErrorPts = ProblemMark.From(outsideColumnPts, "пилон вне плиты");
                 return res;
             }
 
@@ -135,7 +135,7 @@ namespace MeshPlugin
             if (outsideHoles.Count > 0)
             {
                 res.Log.Add($"\nОшибка: контуры отверстий выходят за контур фундаментной плиты ({outsideHoles.Count} шт.), центры: {string.Join(", ", outsideHoles)}. Отверстие обязано целиком лежать в пределах плиты. Команда остановлена, чертёж не изменён. Проблемные места отмечены кругами в слое {ProblemLayerName}.\n");
-                res.ErrorPts = outsideHolePts;
+                res.ErrorPts = ProblemMark.From(outsideHolePts, "отверстие вне плиты");
                 return res;
             }
 
@@ -152,7 +152,7 @@ namespace MeshPlugin
             if (outsideRects.Count > 0)
             {
                 res.Log.Add($"\nОшибка: контуры пилонов выходят за контур фундаментной плиты ({outsideRects.Count} шт.), центры: {string.Join(", ", outsideRects)}. Пилон обязан целиком лежать в пределах плиты. Команда остановлена, чертёж не изменён. Проблемные места отмечены кругами в слое {ProblemLayerName}.\n");
-                res.ErrorPts = outsideRectPts;
+                res.ErrorPts = ProblemMark.From(outsideRectPts, "контур пилона вне плиты");
                 return res;
             }
 
@@ -278,12 +278,14 @@ namespace MeshPlugin
             colXs.AddRange(input.AxisXs);
             colYs.AddRange(input.AxisYs);
 
-            var xs = BuildGridCoords(minX, maxX, cellSize, colXs, holeXs, out int shiftedX, out int insertedX, out int rejectedX);
-            var ys = BuildGridCoords(minY, maxY, cellSize, colYs, holeYs, out int shiftedY, out int insertedY, out int rejectedY);
+            var xs = BuildGridCoords(minX, maxX, cellSize, colXs, holeXs, out int shiftedX, out int insertedX, out int rejectedX, out int splitX);
+            var ys = BuildGridCoords(minY, maxY, cellSize, colYs, holeYs, out int shiftedY, out int insertedY, out int rejectedY, out int splitY);
             if (shiftedX + shiftedY > 0)
                 res.Log.Add($"\nЛиний сетки смещено к граням пилонов/кромкам отверстий/косякам: {shiftedX + shiftedY}\n");
             if (insertedX + insertedY > 0)
                 res.Log.Add($"\nЛиний сетки добавлено по кромкам отверстий: {insertedX + insertedY}\n");
+            if (splitX + splitY > 0)
+                res.Log.Add($"\nЛиний сетки добавлено, чтобы ячейка не превысила {cellSize * MeshTol.MaxCellFactor:0} мм (шаг + {(MeshTol.MaxCellFactor - 1.0) * 100:0}%): {splitX + splitY}\n");
             if (rejectedX + rejectedY > 0)
                 res.Log.Add($"\nЦелей выравнивания пропущено (линия занята другой целью или сдвиг оставил бы полосу уже {MeshTol.MinGridGap(cellSize):0} мм): {rejectedX + rejectedY}\n");
 
@@ -816,14 +818,14 @@ namespace MeshPlugin
             // Страховка: точку строго внутри пустоты (проёма/пилона) НЕ помечаем —
             // сетки там и не должно быть, а «незамкнутость» фиксировалась ДО финальной
             // обрезки проёмов и оставляла осиротевшие круги в пустоте.
-            var problemPts = new List<Point2d>();
+            var problemPts = new List<ProblemMark>();
             foreach (var p in failedPolygonPts)
-                if (!PointInsideAnyVoid(p, voidPolys)) problemPts.Add(p);
+                if (!PointInsideAnyVoid(p, voidPolys)) problemPts.Add(new ProblemMark(p, "не разбито"));
             foreach (var p in unclosedNodes)
-                if (!PointInsideAnyVoid(p, voidPolys)) problemPts.Add(p);
+                if (!PointInsideAnyVoid(p, voidPolys)) problemPts.Add(new ProblemMark(p, "открытый узел"));
             // Узлы контура пилона отмечаются без фильтра по пустотам: они лежат на
             // грани отпечатка, а отпечаток — не пустота.
-            problemPts.AddRange(unlinkedPylonNodes);
+            problemPts.AddRange(ProblemMark.From(unlinkedPylonNodes, "узел пилона"));
             if (problemPts.Count > 0)
                 res.Log.Add($"\nВНИМАНИЕ: проблемных мест сетки: {problemPts.Count} (не разбитых полигонов: {failedPolygonPts.Count}, незамкнутых узлов: {unclosedNodes.Count}, узлов контура пилонов вне сетки: {unlinkedPylonNodes.Count}) — отмечены кругами в слое {ProblemLayerName}. Поправьте расположение объектов в этих местах и перестройте сетку.\n");
 

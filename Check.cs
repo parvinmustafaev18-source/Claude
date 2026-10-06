@@ -59,7 +59,7 @@ namespace MeshPlugin
 
                 var errors = new List<string>();    // построение не пройдёт или даст мусор
                 var warnings = new List<string>();  // строить можно, но посмотреть стоит
-                var marks = new List<Point2d>();    // куда ставить круги ПРОБЛЕМА
+                var marks = new List<ProblemMark>();  // круги ПРОБЛЕМА с подписью причины
 
                 EraseMarksOnLayer(tr, db, ProblemLayerName);
 
@@ -69,8 +69,8 @@ namespace MeshPlugin
                 if (!pline.Closed)
                 {
                     errors.Add("контур плиты не замкнут (замкните полилинию: свойство Closed или команда PEDIT → Замкнуть)");
-                    marks.Add(rawVerts[0]);
-                    marks.Add(rawVerts[rawVerts.Count - 1]);
+                    marks.Add(new ProblemMark(rawVerts[0], "контур не замкнут"));
+                    marks.Add(new ProblemMark(rawVerts[rawVerts.Count - 1], "контур не замкнут"));
                 }
 
                 if (PolylineHasArcs(pline))
@@ -80,7 +80,7 @@ namespace MeshPlugin
                         if (pline.GetSegmentType(i) == SegmentType.Arc)
                         {
                             arcs++;
-                            if (marks.Count < 200) marks.Add(rawVerts[i % rawVerts.Count]);
+                            if (marks.Count < 200) marks.Add(new ProblemMark(rawVerts[i % rawVerts.Count], "дуга в контуре"));
                         }
                     errors.Add($"в контуре плиты дуг: {arcs} — замените дуги хордами (ЛИРА дуги не принимает)");
                 }
@@ -106,7 +106,7 @@ namespace MeshPlugin
                     if (selfInts.Count > 0)
                     {
                         errors.Add($"контур плиты самопересекается: пересечений сторон {selfInts.Count}");
-                        marks.AddRange(selfInts);
+                        marks.AddRange(ProblemMark.From(selfInts, "самопересечение"));
                     }
 
                     List<double> cornerAngles;
@@ -201,20 +201,20 @@ namespace MeshPlugin
                         if (!IsSegmentInsideContour(w[0], w[1], contourPts))
                         {
                             wallsOut++;
-                            marks.Add(new Point2d((w[0].X + w[1].X) / 2.0, (w[0].Y + w[1].Y) / 2.0));
+                            marks.Add(new ProblemMark(new Point2d((w[0].X + w[1].X) / 2.0, (w[0].Y + w[1].Y) / 2.0), "стена вне плиты"));
                         }
                     if (wallsOut > 0)
                         errors.Add($"стен (осей) вне контура плиты: {wallsOut} — построение будет остановлено");
 
                     int colsOut = 0;
                     foreach (var c in columnPolys)
-                        if (!IsPolygonInsideContour(c, contourPts)) { colsOut++; marks.Add(PolygonCentroid(c)); }
+                        if (!IsPolygonInsideContour(c, contourPts)) { colsOut++; marks.Add(new ProblemMark(PolygonCentroid(c), "пилон вне плиты")); }
                     if (colsOut > 0)
                         errors.Add($"пилонов вне контура плиты: {colsOut} — построение будет остановлено");
 
                     int holesOut = 0;
                     foreach (var h in holePolys)
-                        if (!IsPolygonInsideContour(h, contourPts)) { holesOut++; marks.Add(PolygonCentroid(h)); }
+                        if (!IsPolygonInsideContour(h, contourPts)) { holesOut++; marks.Add(new ProblemMark(PolygonCentroid(h), "отверстие вне плиты")); }
                     if (holesOut > 0)
                         errors.Add($"отверстий вне контура плиты: {holesOut} — построение будет остановлено");
                 }
@@ -236,7 +236,7 @@ namespace MeshPlugin
                         onAxis = true;
                         break;
                     }
-                    if (!onAxis) { doorsOffAxis++; marks.Add(mid); }
+                    if (!onAxis) { doorsOffAxis++; marks.Add(new ProblemMark(mid, "дверь не на оси")); }
                 }
                 if (doorsOffAxis > 0)
                     errors.Add($"дверных проёмов не на оси стены: {doorsOffAxis} — такой проём при экспорте не вырежется (кусок стены ищется по середине с допуском {MeshTol.DoorOnAxis:0.#} мм)");
@@ -250,7 +250,7 @@ namespace MeshPlugin
                     bool has = false;
                     foreach (var cc in columnCenters)
                         if (IsPointInPolygon(cc, c)) { has = true; break; }
-                    if (!has) { colsNoCenter++; marks.Add(PolygonCentroid(c)); }
+                    if (!has) { colsNoCenter++; marks.Add(new ProblemMark(PolygonCentroid(c), "пилон без центра")); }
                 }
                 if (colsNoCenter > 0)
                     warnings.Add($"контуров пилонов без точки центра: {colsNoCenter} — запустите LIRPYLON");
@@ -305,7 +305,7 @@ namespace MeshPlugin
 
                 // ---- Итог -------------------------------------------------------------
                 if (marks.Count > 0)
-                    DrawMarkCircles(tr, db, ProblemLayerName, marks, ProblemMarkRadius);
+                    DrawProblemMarks(tr, db, marks);
 
                 ed.WriteMessage("\n=== ПРОВЕРКА ЧЕРТЕЖА ===\n");
                 foreach (var e in errors) ed.WriteMessage($"  ОШИБКА: {e}\n");

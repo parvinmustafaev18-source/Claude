@@ -1,4 +1,6 @@
 using System;
+using System.Collections.Generic;
+using Autodesk.AutoCAD.Geometry;
 
 namespace MeshPlugin
 {
@@ -68,6 +70,13 @@ namespace MeshPlugin
         public const double MaxShiftFactor = 0.3;
         public const double MaxShiftAbs = 100.0;
 
+        // Насколько ячейка вправе оказаться крупнее заданного шага. Сдвиг линии к
+        // цели растягивает соседнюю полосу на величину сдвига (до 100 мм), а удаление
+        // линии ради жёсткой цели — сразу почти вдвое. Пользователь задал шаг и вправе
+        // ожидать, что ячейка не вырастет сверх него заметно, поэтому полоса шире
+        // MaxCellFactor x шаг делится на равные части (BuildGridCoords).
+        public const double MaxCellFactor = 1.1;
+
         // Радиус поиска кандидатов при замыкании открытого узла, в шагах сетки.
         public const double CloseRadiusFactor = 1.6;
 
@@ -91,6 +100,26 @@ namespace MeshPlugin
         public static double MinGridGap(double step)
         {
             return Math.Min(MinElementSize, 0.5 * step);
+        }
+    }
+
+    // Точка проблемы вместе с коротким объяснением. Круг без подписи заставляет
+    // инженера лезть в консоль и гадать, что именно не так в этом месте, — поэтому
+    // причина едет вместе с координатой от места, где она обнаружена, до чертежа.
+    internal struct ProblemMark
+    {
+        public Point2d Pt;
+        public string Text;
+
+        public ProblemMark(Point2d pt, string text) { Pt = pt; Text = text; }
+
+        // Пометить готовый список точек одной и той же подписью.
+        public static List<ProblemMark> From(List<Point2d> pts, string text)
+        {
+            var res = new List<ProblemMark>();
+            if (pts != null)
+                foreach (var p in pts) res.Add(new ProblemMark(p, text));
+            return res;
         }
     }
 
@@ -159,6 +188,12 @@ namespace MeshPlugin
         private const string ProblemLayerName = "ПРОБЛЕМА";
         private const double ProblemMarkRadius = 300.0;
 
+        // Высота подписи внутри круга ПРОБЛЕМА. Круг Ø600 — короткое слово вроде
+        // «вылез» помещается целиком, длинное («самопересечение») выходит за круг,
+        // и это лучше нечитаемой мелочи: подпись нужна, чтобы инженер понял причину
+        // без чтения консоли.
+        private const double ProblemTextHeight = 150.0;
+
         // Памятка LIRHELP, вставленная в чертёж. Слой непечатаемый: текст нужен
         // инженеру на экране, а на лист попасть не должен. Высота 250 мм подобрана
         // под масштаб плана в миллиметрах.
@@ -166,7 +201,8 @@ namespace MeshPlugin
         private const short HelpLayerColor = 7;       // белый/чёрный по фону, не блёклый серый
         private const double HelpTextHeight = 250.0;  // обычный текст
         private const double HelpCommandHeight = 270.0;  // имена команд — крупнее
-        private const string HelpTextStyleName = "ISOCPEUR";
+        // Стиль текста плагина: памятка LIRHELP и подписи к кругам ПРОБЛЕМА.
+        private const string PluginTextStyleName = "ISOCPEUR";
 
         // Слой критических элементов, оставшийся от убранной команды MESHQUALITY:
         // на старых чертежах он ещё лежит, поэтому LIRBUILD его вычищает.

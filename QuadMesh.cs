@@ -257,7 +257,7 @@ namespace MeshPlugin
                 // Проблемные места сетки — красные круги в слое проблем (список и
                 // сообщение о нём собрало ядро).
                 if (mesh.ProblemPts.Count > 0)
-                    DrawMarkCircles(tr, db, ProblemLayerName, mesh.ProblemPts, ProblemMarkRadius);
+                    DrawProblemMarks(tr, db, mesh.ProblemPts);
 
                 tr.Commit();
             }
@@ -564,11 +564,13 @@ namespace MeshPlugin
             List<double> hardTargets,
             out int shiftedCount,
             out int insertedCount,
-            out int rejectedCount)
+            out int rejectedCount,
+            out int splitCount)
         {
             shiftedCount = 0;
             insertedCount = 0;
             rejectedCount = 0;
+            splitCount = 0;
 
             var coords = new List<double>();
             double v = min;
@@ -699,6 +701,28 @@ namespace MeshPlugin
             }
 
             coords.Sort();
+
+            // Полоса шире MaxCellFactor x шаг делится на равные части. Растягивает
+            // полосу сдвиг линии к цели (до 100 мм) и удаление линии ради жёсткой
+            // цели (почти вдвое) — пользователь задал шаг и вправе ожидать, что
+            // ячейка не вырастет сверх него заметно. Делим равномерно: новые линии
+            // не сбивают уже пойманные цели, те остаются на своих местах.
+            double maxSpan = step * MeshTol.MaxCellFactor;
+            var spanned = new List<double>();
+            for (int i = 0; i < coords.Count; i++)
+            {
+                spanned.Add(coords[i]);
+                if (i + 1 >= coords.Count) continue;
+
+                double span = coords[i + 1] - coords[i];
+                if (span <= maxSpan + MeshTol.Zero) continue;
+
+                int parts = (int)Math.Ceiling(span / maxSpan);
+                double d = span / parts;
+                for (int k = 1; k < parts; k++) { spanned.Add(coords[i] + d * k); splitCount++; }
+            }
+            coords = spanned;
+
             var result = new List<double>();
             foreach (var c in coords)
             {
