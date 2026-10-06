@@ -386,7 +386,7 @@ namespace MeshPlugin
                 System.IO.File.WriteAllText(legendPath, task.LegendText, System.Text.Encoding.GetEncoding(1251));
 
                 if (task.LostFacePts.Count > 0)
-                    DrawMarkCircles(tr, db, ProblemLayerName, task.LostFacePts, ProblemMarkRadius);
+                    DrawProblemMarks(tr, db, ProblemMark.From(task.LostFacePts, "грань потеряна"));
 
                 ed.WriteMessage($"Легенда: {legendPath}\n");
                 ed.WriteMessage($"Расчёт экспорта: {exportWatch.Elapsed.TotalSeconds:0.0} с\n");

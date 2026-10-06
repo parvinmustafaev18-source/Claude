@@ -9,6 +9,7 @@
 | Слой | Кто создаёт | Кто читает | Что означает |
 |---|---|---|---|
 | `FOUNDATION_SLABS(H-<t>)` | LIRLAYERS | контур выбирается вручную | плита толщиной t мм |
+| `ПРОБЛЕМА` | LIRBUILD, LIRCHECK, LIREXPORT | — | круг Ø600 + подпись причины (`ProblemMark`, `DrawProblemMarks`); ставишь круг — принеси текст |
 | `LINE_TRIANGULATION` | LIRLAYERS, LIRBUILD, ExplodeColumnContours | экспорт | линии сетки; свои отрезки LIRBUILD помечает XData `MESHPLUGIN_GRID` и по метке стирает их при повторе — весь слой чистить нельзя |
 | `WALLS(H-<t>)` | LIRWALLS, LIRWALLAXIS | `GetWallSegments`, `SnapWallsToGrid`, экспорт | ось стены, пластина толщиной t |
 | `WALLS(H-<t> PILON)` | LIRPYLON | то же + `GetPylonCrossConstraints`, `GetPylonAxisTargets` | ось пилона; **не снапится** |

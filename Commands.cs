@@ -103,7 +103,7 @@ namespace MeshPlugin
         {
             return "\\H" + HelpCommandHeight.ToString("0.###",
                     System.Globalization.CultureInfo.InvariantCulture)
-                + ";\\L\\f" + HelpTextStyleName + "|b1|i0|c204|p34;";
+                + ";\\L\\f" + PluginTextStyleName + "|b1|i0|c204|p34;";
         }
 
         private static string HelpMTextContents()
@@ -203,7 +203,7 @@ namespace MeshPlugin
                         ent.Erase();
                     }
 
-                    ObjectId styleId = EnsureHelpTextStyle(db, tr);
+                    ObjectId styleId = EnsurePluginTextStyle(db, tr);
 
                     MText mt = new MText();
                     mt.SetDatabaseDefaults();
@@ -236,7 +236,7 @@ namespace MeshPlugin
                     tr.Commit();
 
                     ZoomTo(ed, pos.X, pos.Y - h, pos.X + w, pos.Y);
-                    ed.WriteMessage($"\nПамятка вставлена в чертёж: слой {HelpLayerName}, стиль {HelpTextStyleName}, "
+                    ed.WriteMessage($"\nПамятка вставлена в чертёж: слой {HelpLayerName}, стиль {PluginTextStyleName}, "
                         + $"высота текста {HelpTextHeight:0.#} мм, команд {HelpCommandHeight:0.#} мм.\n");
                 }
             }
@@ -250,16 +250,16 @@ namespace MeshPlugin
         // Стиль памятки. ISOCPEUR — шрифт TrueType из поставки AutoCAD; кодовая
         // страница 204 (кириллица) обязательна, иначе часть сборок рисует русские
         // буквы вопросами. Высота в стиле нулевая: её задаёт сам текст.
-        private ObjectId EnsureHelpTextStyle(Database db, Transaction tr)
+        private ObjectId EnsurePluginTextStyle(Database db, Transaction tr)
         {
             TextStyleTable tst = (TextStyleTable)tr.GetObject(db.TextStyleTableId, OpenMode.ForRead);
-            if (tst.Has(HelpTextStyleName)) return tst[HelpTextStyleName];
+            if (tst.Has(PluginTextStyleName)) return tst[PluginTextStyleName];
 
             tst.UpgradeOpen();
             TextStyleTableRecord st = new TextStyleTableRecord();
-            st.Name = HelpTextStyleName;
+            st.Name = PluginTextStyleName;
             st.FileName = "isocpeur.ttf";
-            st.Font = new Autodesk.AutoCAD.GraphicsInterface.FontDescriptor(HelpTextStyleName, false, false, 204, 0);
+            st.Font = new Autodesk.AutoCAD.GraphicsInterface.FontDescriptor(PluginTextStyleName, false, false, 204, 0);
             st.TextSize = 0.0;
             tst.Add(st);
             tr.AddNewlyCreatedDBObject(st, true);
@@ -1043,7 +1043,7 @@ namespace MeshPlugin
             var selfInts = FindSelfIntersections(pts);
             if (selfInts.Count > 0)
             {
-                DrawMarkCircles(tr, db, ProblemLayerName, new List<Point2d> { selfInts[0] }, ProblemMarkRadius);
+                DrawProblemMarks(tr, db, new List<ProblemMark> { new ProblemMark(selfInts[0], "самопересечение") });
                 ed.WriteMessage($"\nОшибка: контур самопересекается (пересечений сторон: {selfInts.Count}). Первое место ({selfInts[0].X:0}, {selfInts[0].Y:0}) отмечено кругом в слое {ProblemLayerName}. Исправьте контур.\n");
                 return false;
             }
@@ -1082,13 +1082,52 @@ namespace MeshPlugin
         // Маркировка проблем отдельной транзакцией — для случаев, когда основная
         // транзакция команды откатывается (чертёж не меняется, круги остаются).
         // Вызывать только после tr.Abort()/Dispose основной транзакции.
-        private void MarkProblemPoints(Database db, List<Point2d> pts)
+        private void MarkProblemPoints(Database db, List<ProblemMark> marks)
         {
             using (Transaction tr = db.TransactionManager.StartTransaction())
             {
                 EraseMarksOnLayer(tr, db, ProblemLayerName);
-                DrawMarkCircles(tr, db, ProblemLayerName, pts, ProblemMarkRadius);
+                DrawProblemMarks(tr, db, marks);
                 tr.Commit();
+            }
+        }
+
+        // Круг ПРОБЛЕМА вместе с подписью: что именно здесь не так. Без подписи
+        // инженеру остаётся гадать — круги одинаковые, а причин у них с десяток
+        // (стена вне плиты, самопересечение контура, открытый узел, ...).
+        private void DrawProblemMarks(Transaction tr, Database db, List<ProblemMark> marks)
+        {
+            if (marks == null || marks.Count == 0) return;
+
+            EnsureLayer(db, tr, ProblemLayerName, 1); // красный
+            ObjectId styleId = EnsurePluginTextStyle(db, tr);
+            BlockTableRecord ms = (BlockTableRecord)tr.GetObject(db.CurrentSpaceId, OpenMode.ForWrite);
+
+            foreach (var m in marks)
+            {
+                Point3d c3 = new Point3d(m.Pt.X, m.Pt.Y, 0);
+
+                Circle c = new Circle(c3, Vector3d.ZAxis, ProblemMarkRadius);
+                c.Layer = ProblemLayerName;
+                c.LineWeight = LineWeight.LineWeight035;
+                ms.AppendEntity(c);
+                tr.AddNewlyCreatedDBObject(c, true);
+
+                if (string.IsNullOrEmpty(m.Text)) continue;
+
+                DBText t = new DBText();
+                t.TextString = m.Text;
+                t.Height = ProblemTextHeight;
+                t.Layer = ProblemLayerName;
+                t.TextStyleId = styleId;
+                // Текст центрируется по кругу: Position задаётся до режимов
+                // выравнивания, иначе AlignmentPoint игнорируется.
+                t.Position = c3;
+                t.HorizontalMode = TextHorizontalMode.TextCenter;
+                t.VerticalMode = TextVerticalMode.TextVerticalMid;
+                t.AlignmentPoint = c3;
+                ms.AppendEntity(t);
+                tr.AddNewlyCreatedDBObject(t, true);
             }
         }
 
