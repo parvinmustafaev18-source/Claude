@@ -65,6 +65,7 @@ namespace MeshPlugin
             new HelpLine("     ", "LIRHELP", "этот список: в консоль и в чертёж, слой " + HelpLayerName),
             new HelpLine(""),
             new HelpLine("Порядок не формальность: каждая команда читает слои, созданные предыдущей."),
+            new HelpLine("LIRBUILD перед работой сам сохраняет чертёж — это точка возврата."),
             new HelpLine("Сетку LIRBUILD сам кладёт в LINE_TRIANGULATION — текущий слой чертежа"),
             new HelpLine("значения не имеет; повторный запуск заменяет прежнюю сетку, а не кладёт"),
             new HelpLine("вторую поверх. От LIRLAYERS экспорту нужен контур плиты в слое"),
@@ -1433,6 +1434,34 @@ namespace MeshPlugin
             ltr.Color = Autodesk.AutoCAD.Colors.Color.FromColorIndex(Autodesk.AutoCAD.Colors.ColorMethod.ByAci, colorIndex);
             lt.Add(ltr);
             tr.AddNewlyCreatedDBObject(ltr, true);
+        }
+
+        // Сохранить чертёж перед долгой работой. Точка возврата на случай, если
+        // AutoCAD не переживёт расчёт: сохраняется состояние ДО построения, то есть
+        // ровно то, к чему инженер захочет вернуться. Чертёж, который ни разу не
+        // сохраняли, сохранять некуда — тогда предупреждение, но команда работает:
+        // отказывать из-за этого было бы грубее, чем предупредить.
+        private void SaveDrawingBeforeWork(Document doc, Editor ed)
+        {
+            string path = doc.Database.Filename;
+
+            if (string.IsNullOrEmpty(path) || !System.IO.Path.IsPathRooted(path))
+            {
+                ed.WriteMessage("\nВНИМАНИЕ: чертёж ещё ни разу не сохранён, точки возврата перед построением не будет.\n");
+                return;
+            }
+
+            try
+            {
+                doc.Database.SaveAs(path, DwgVersion.Current);
+                ed.WriteMessage($"\nЧертёж сохранён перед построением: {path}\n");
+            }
+            catch (System.Exception ex)
+            {
+                // Файл только для чтения, занят другим приложением, нет места на диске.
+                // Это не повод не строить — но знать об этом инженер обязан.
+                ed.WriteMessage($"\nВНИМАНИЕ: сохранить чертёж не удалось ({ex.Message}). Построение продолжается без точки возврата.\n");
+            }
         }
 
         // Без записи в таблицу RegApp метка XData к объекту не привяжется — молча,

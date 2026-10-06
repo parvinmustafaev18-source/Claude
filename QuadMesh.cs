@@ -18,6 +18,13 @@ namespace MeshPlugin
             EchoCommandStart(ed, "LIRBUILD");
             Database db = doc.Database;
 
+            // Чертёж сохраняется ДО всякой работы: построение — самая долгая и самая
+            // прожорливая команда плагина, и если AutoCAD её не переживёт, на диске
+            // останется состояние «как было до построения», а не потерянный день.
+            // Сохранение идёт вне транзакции — внутри открытой транзакции сохранять
+            // базу нельзя.
+            SaveDrawingBeforeWork(doc, ed);
+
             PromptEntityOptions peo = new PromptEntityOptions("\nВыберите замкнутый контур (полилинию): ");
             peo.SetRejectMessage("\nМожно выбрать только полилинию (LWPOLYLINE).");
             peo.AddAllowedClass(typeof(Polyline), false);
