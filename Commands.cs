@@ -982,7 +982,7 @@ namespace MeshPlugin
                 foreach (var ln in sizeLayers.Keys)
                     ed.WriteMessage($"  {ln}\n");
                 if (crossCount > 0)
-                    ed.WriteMessage($"Контуры пилонов сохранены в слое {PylonOutlineLayerName}: LIRBUILD отпечатает их на сетке плиты (узлы в углах, внутри сетка {MeshTol.PylonInnerCell:0} мм). Ось пилона ведёт себя как стена: врежется в сетку, получит узел в центре поперёк оси, экспорт даст пластины КЭ 44.\n");
+                    ed.WriteMessage($"Контуры пилонов сохранены в слое {PylonOutlineLayerName}: LIRBUILD отпечатает их на сетке плиты (узлы в углах, внутри 2-6 элементов на сторону — по её размеру). Ось пилона ведёт себя как стена: врежется в сетку, получит узел в центре поперёк оси, экспорт даст пластины КЭ 44.\n");
 
                 tr.Commit();
             }
