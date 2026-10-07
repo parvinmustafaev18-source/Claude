@@ -328,6 +328,17 @@ namespace MeshPlugin
                 // попавшие в тело пилона, и дать им свою жёсткость.
                 var pylonRects = GetPylonOutlines(tr, db, out _, out _);
 
+                // Зоны локального утолщения плиты (слои MESH_THICK(H-...)). В планарный
+                // граф они НЕ добавляются: их рёбра уже лежат в сетке — врезал LIRTHICK.
+                // Нужны только затем, чтобы элементы плиты внутри зоны получили свою
+                // жёсткость с толщиной зоны.
+                int thickOpen, thickNoT;
+                var thickZones = GetThickZones(tr, db, out thickOpen, out thickNoT);
+                if (thickZones.Count > 0 || thickOpen > 0 || thickNoT > 0)
+                    ed.WriteMessage($"\nЗон утолщения плиты: {thickZones.Count}" +
+                        (thickOpen > 0 ? $", пропущено незамкнутых: {thickOpen}" : "") +
+                        (thickNoT > 0 ? $", пропущено без толщины в имени слоя: {thickNoT}" : "") + "\n");
+
                 // ---- РАСЧЁТ -------------------------------------------------------
                 // Всё, что дальше, считает ядро без чертежа (ExportCore.cs): планарный
                 // граф, элементы, жёсткости, выдавливание стен и текст задачи.
@@ -345,6 +356,7 @@ namespace MeshPlugin
                     Segments = segments,
                     HolePolys = holePolys,
                     PylonRects = pylonRects,
+                    ThickZones = thickZones,
                     WallOrig = wallOrig,
                     WallThickness = wallOrigThickness,
                     WallIsPylon = wallOrigIsPylon,

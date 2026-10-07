@@ -106,6 +106,7 @@
     <Compile Include="SelfCheck.cs" />
     <Compile Include="SelfTest.cs" />
     <Compile Include="SpatialGrid.cs" />
+    <Compile Include="ThickZone.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />
   </ItemGroup>
   <ItemGroup>

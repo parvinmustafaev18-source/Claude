@@ -1,6 +1,6 @@
 ---
 name: autocad-mesh-plugin-workflow
-description: AutoCAD .NET-плагин MeshPlugin (partial class Commands), строящий регулярную квадратную КЭ-сетку по контуру плиты с учётом стен, пилонов, проёмов и отверстий. Используй при любой правке Commands.cs, QuadMesh.cs, Geometry.cs, MeshCore.cs, SpatialGrid.cs; при вопросах о командах LIR* (LIRHELP, LIRLAYERS, LIRWALLS, LIRDOORS, LIRWALLAXIS, LIRWALLJOIN, LIRPYLON, LIRBUILD, LIRCHECK, LIREXPORT); о слоях FOUNDATION_SLABS/WALLS/COLUMNS/WALL_DOORS/MESH_*/ПРОБЛЕМА/ПЛОХИЕ и их именовании; об алгоритмах сетки (Sutherland-Hodgman, ear-clipping, edgeMap-сращивание, снап стен и дверей, пилоны-оси); о качестве элементов (α). Для формата .txt экспорта в ЛИРА-САПР — skill lira-sapr-mesh-export.
+description: AutoCAD .NET-плагин MeshPlugin (partial class Commands), строящий регулярную квадратную КЭ-сетку по контуру плиты с учётом стен, пилонов, проёмов и отверстий. Используй при любой правке Commands.cs, QuadMesh.cs, Geometry.cs, MeshCore.cs, SpatialGrid.cs; при вопросах о командах LIR* (LIRHELP, LIRLAYERS, LIRWALLS, LIRDOORS, LIRWALLAXIS, LIRWALLJOIN, LIRPYLON, LIRBUILD, LIRFIX, LIRTHICK, LIRCHECK, LIREXPORT); о слоях FOUNDATION_SLABS/WALLS/COLUMNS/WALL_DOORS/MESH_*/ПРОБЛЕМА/ПЛОХИЕ и их именовании; об алгоритмах сетки (Sutherland-Hodgman, ear-clipping, edgeMap-сращивание, снап стен и дверей, пилоны-оси); о качестве элементов (α). Для формата .txt экспорта в ЛИРА-САПР — skill lira-sapr-mesh-export.
 ---
 
 # MeshPlugin — КЭ-сетка в AutoCAD
@@ -34,7 +34,8 @@ description: AutoCAD .NET-плагин MeshPlugin (partial class Commands), ст
 
 `LIRLAYERS` → `LIRWALLAXIS` и/или `LIRWALLS` → `LIRDOORS` →
 `LIRPYLON` (пилоны) → при нужде `LIRWALLJOIN` → `LIRCHECK`
-(проверка входа) → `LIRBUILD` → `LIREXPORT`
+(проверка входа) → `LIRBUILD` → при нужде `LIRTHICK` (зоны утолщения
+плиты: правят ГОТОВУЮ сетку, не строят заново) → `LIREXPORT`
 (skill `lira-sapr-mesh-export`).
 
 Расчёт сетки и расчёт экспорта живут отдельно от чертежа: `MeshCore.cs`

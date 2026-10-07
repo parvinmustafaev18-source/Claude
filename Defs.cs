@@ -296,6 +296,7 @@ namespace MeshPlugin
                 || layer == TriangulationLayerName
                 || layer == HoleLayerName
                 || layer == PylonOutlineLayerName
+                || IsThickLayer(layer)
                 || layer == HelpLayerName
                 || IsColumnLayer(layer);
         }
