@@ -148,7 +148,7 @@ namespace MeshPlugin
                         break;
                     }
                 }
-                ed.WriteMessage($"Узлов окружающей сетки на границе области: {anchors.Count} (из них дают цель выравнивания: {anchorXs.Count + anchorYs.Count})\n");
+                ed.WriteMessage($"Узлов окружающей сетки на границе области: {anchors.Count}; из них задают линию новой сетки: {anchorXs.Count + anchorYs.Count} (остальные на наклонных гранях — там стык даст Т-узлы)\n");
 
                 // ---- ВХОД ЯДРА, ОБРЕЗАННЫЙ ОБЛАСТЬЮ --------------------------------
                 // Ядро проверяет жёсткие правила ОТНОСИТЕЛЬНО переданного контура:
@@ -245,11 +245,16 @@ namespace MeshPlugin
                 jambXs = KeepInRange(jambXs, bb[0], bb[2]); jambYs = KeepInRange(jambYs, bb[1], bb[3]);
                 axisXs = KeepInRange(axisXs, bb[0], bb[2]); axisYs = KeepInRange(axisYs, bb[1], bb[3]);
 
-                // Якоря — к тем же мягким целям. Жёсткими их делать нельзя: на границе
-                // их бывают десятки, и каждый вставил бы линию через всю область,
-                // сведя заданный шаг на нет.
-                axisXs.AddRange(anchorXs);
-                axisYs.AddRange(anchorYs);
+                // Якоря — ЖЁСТКИЕ цели: на каждом узле окружающей сетки линия новой
+                // сетки обязана стоять, тогда сетки смыкаются узел в узел и новая
+                // продолжает старую. Сначала они были мягкими (двигают линию, только
+                // если она ближе 100 мм) — на реальном плане 07.10.2026 это дало ровно
+                // то, на что пожаловался пользователь: «новая локальная сетка не видит
+                // сетку вокруг». Да, каждый якорь ставит линию через всю область, и
+                // заданный шаг работает только там, где окружающая сетка реже, — это
+                // и есть цена связности, она важнее.
+                var hardXs = new List<double>(anchorXs);
+                var hardYs = new List<double>(anchorYs);
 
                 var input = new MeshInput
                 {
@@ -267,6 +272,8 @@ namespace MeshPlugin
                     JambYs = jambYs,
                     AxisXs = axisXs,
                     AxisYs = axisYs,
+                    HardXs = hardXs,
+                    HardYs = hardYs,
 
                     // Двери НЕ подтягиваются: их уже поставило основное построение, и
                     // двигать их второй раз значит рассогласовать с остальным планом.
@@ -364,8 +371,30 @@ namespace MeshPlugin
                     if (innerBoundary.Nodes.Count == before) tied++;
                 }
 
-                ed.WriteMessage($"Стык: якорей {anchors.Count}, из них линия новой сетки продолжает {tied}" +
-                    (anchors.Count - tied > 0 ? $", остальные {anchors.Count - tied} останутся Т-узлами (соседний элемент уйдёт в ЛИРУ веером треугольников — связь при этом полная)" : "") + "\n");
+                ed.WriteMessage($"Стык: узлов окружающей сетки на границе {anchors.Count}, линия новой сетки продолжает {tied}" +
+                    (anchors.Count - tied > 0 ? $", остальные {anchors.Count - tied} стали Т-узлами (связь полная: соседний элемент уйдёт в ЛИРУ разрезанным, но линия сквозь границу не идёт)" : " — все") + "\n");
+                if (anchors.Count - tied > 0)
+                    ed.WriteMessage("Т-узлы появляются там, где поставить линию мешает край области: узел ближе половины шага к границе. Если нужен сквозной стык по всем узлам — обведите область ПО ЛИНИЯМ существующей сетки.\n");
+                // КОНТРОЛЬ СВЯЗНОСТИ. Узел, у которого ровно одно ребро, — это
+                // оборванный конец: в ЛИРЕ он ничего не держит. В правильной сетке
+                // таких нет, поэтому каждый идёт кругом в ПРОБЛЕМА с подписью, а не
+                // прячется в числах. Считаем по ПОЛОСЕ (work): за её пределами сетка
+                // не наша, и чужие обрывы на совести прошлых правок.
+                var degIndex = new NodeIndex();
+                var degree = new List<int>();
+                foreach (var s2 in work)
+                {
+                    for (int e = 0; e < 2; e++)
+                    {
+                        int ni2 = degIndex.GetNode(s2[e]);
+                        while (degree.Count <= ni2) degree.Add(0);
+                        degree[ni2]++;
+                    }
+                }
+                var openPts = new List<Point2d>();
+                for (int i = 0; i < degree.Count; i++)
+                    if (degree[i] == 1) openPts.Add(degIndex.Nodes[i]);
+
                 ed.WriteMessage($"Врезка: рёбер разрезано узлом {splitCount}, узлов в пересечения {crossings}" +
                     (dropped > 0 ? $", совпавших рёбер отброшено {dropped}" : "") + "\n");
                 if (crossingsLeft > 0)
@@ -376,7 +405,13 @@ namespace MeshPlugin
                 int erased, added, kept;
                 ApplyMeshSegments(tr, db, meshEnts, meshSegs, meshOwner, all, out erased, out added, out kept);
 
-                if (mesh.ProblemPts.Count > 0) DrawProblemMarks(tr, db, mesh.ProblemPts);
+                var marks = new List<ProblemMark>(mesh.ProblemPts);
+                marks.AddRange(ProblemMark.From(openPts, "узел не связан"));
+                if (marks.Count > 0) DrawProblemMarks(tr, db, marks);
+                if (openPts.Count > 0)
+                    ed.WriteMessage($"ВНИМАНИЕ: узлов с единственным ребром (оборванный конец, в ЛИРЕ ничего не держит): {openPts.Count} — отмечены кругами в слое {ProblemLayerName}.\n");
+                else
+                    ed.WriteMessage("Связность: оборванных узлов в полосе нет.\n");
 
                 ed.WriteMessage($"Чертёж: оставлено без изменений отрезков {kept}, перерисовано {added}, удалено объектов {erased}\n");
                 if (zoneEdgesIn.Count > 0)
