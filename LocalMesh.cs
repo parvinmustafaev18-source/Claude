@@ -192,6 +192,13 @@ namespace MeshPlugin
 
                 if (clippedHoles + clippedColumns + clippedRects > 0)
                     ed.WriteMessage($"Обрезано границей области: отверстий {clippedHoles}, пилонов {clippedColumns}, отпечатков {clippedRects} — внутри области считается только попавшая в неё часть\n");
+                // Обрезанный отпечаток — единственный случай, где обрезка реально
+                // портит сетку: ядро обязано поставить узел на каждую грань
+                // отпечатка, а срезанная грань лежит на границе области, и рядом с
+                // ней родятся рёбра в десятки миллиметров. Пилон лучше обводить
+                // целиком — об этом и предупреждаем, а не молчим.
+                if (clippedRects > 0)
+                    ed.WriteMessage($"ВНИМАНИЕ: граница области режет отпечаток пилона ({clippedRects} шт.). У такого пилона в области возможны короткие рёбра и узлы контура вне сетки. Лучше обвести область так, чтобы пилон попадал в неё целиком.\n");
 
                 if (cutMarks.Count > 0)
                 {
@@ -364,25 +371,37 @@ namespace MeshPlugin
                         if (IsOnPolygonBoundary(s[e], region, MeshTol.Collinear)) innerBoundary.GetNode(s[e]);
 
                 int tied = 0;
+                var untied = new List<Point2d>();
                 foreach (var a in anchors)
                 {
                     int before = innerBoundary.Nodes.Count;
                     innerBoundary.GetNode(a);
                     if (innerBoundary.Nodes.Count == before) tied++;
+                    else untied.Add(a);
                 }
 
                 ed.WriteMessage($"Стык: узлов окружающей сетки на границе {anchors.Count}, линия новой сетки продолжает {tied}" +
                     (anchors.Count - tied > 0 ? $", остальные {anchors.Count - tied} стали Т-узлами (связь полная: соседний элемент уйдёт в ЛИРУ разрезанным, но линия сквозь границу не идёт)" : " — все") + "\n");
-                if (anchors.Count - tied > 0)
-                    ed.WriteMessage("Т-узлы появляются там, где поставить линию мешает край области: узел ближе половины шага к границе. Если нужен сквозной стык по всем узлам — обведите область ПО ЛИНИЯМ существующей сетки.\n");
-                // КОНТРОЛЬ СВЯЗНОСТИ. Узел, у которого ровно одно ребро, — это
-                // оборванный конец: в ЛИРЕ он ничего не держит. В правильной сетке
-                // таких нет, поэтому каждый идёт кругом в ПРОБЛЕМА с подписью, а не
-                // прячется в числах. Считаем по ПОЛОСЕ (work): за её пределами сетка
-                // не наша, и чужие обрывы на совести прошлых правок.
+                if (untied.Count > 0)
+                {
+                    var where = new List<string>();
+                    for (int i = 0; i < untied.Count && i < 8; i++) where.Add($"({untied[i].X:0}, {untied[i].Y:0})");
+                    ed.WriteMessage($"  Т-узлы: {string.Join(", ", where)}" + (untied.Count > 8 ? $" и ещё {untied.Count - 8}" : "") + "\n");
+                    ed.WriteMessage("  Обычная причина — край области: узел ближе половины шага к границе, линию туда не поставить. Если нужен сквозной стык по всем узлам, обводите область ПО ЛИНИЯМ существующей сетки.\n");
+                }
+                // КОНТРОЛЬ СВЯЗНОСТИ. Узел, у которого ровно одно ребро, — оборванный
+                // конец: в ЛИРЕ он ничего не держит.
+                //
+                // Степень считается по ВСЕЙ сетке (all), а не по рабочей полосе. По
+                // полосе считать нельзя: у каждой линии, пересекающей её край,
+                // продолжение лежит в passive, и такой узел выглядит оборванным.
+                // На реальном плане 07.10.2026 это дало 77 ложных тревог — ровно
+                // столько линий пересекало край полосы.
+                // Сообщаем только о том, что внутри полосы: чужие обрывы за её
+                // пределами — следы прошлых ручных правок, и не наше дело.
                 var degIndex = new NodeIndex();
                 var degree = new List<int>();
-                foreach (var s2 in work)
+                foreach (var s2 in all)
                 {
                     for (int e = 0; e < 2; e++)
                     {
@@ -393,7 +412,12 @@ namespace MeshPlugin
                 }
                 var openPts = new List<Point2d>();
                 for (int i = 0; i < degree.Count; i++)
-                    if (degree[i] == 1) openPts.Add(degIndex.Nodes[i]);
+                {
+                    if (degree[i] != 1) continue;
+                    Point2d p = degIndex.Nodes[i];
+                    if (p.X < mx0 || p.X > mx1 || p.Y < my0 || p.Y > my1) continue;
+                    openPts.Add(p);
+                }
 
                 ed.WriteMessage($"Врезка: рёбер разрезано узлом {splitCount}, узлов в пересечения {crossings}" +
                     (dropped > 0 ? $", совпавших рёбер отброшено {dropped}" : "") + "\n");
