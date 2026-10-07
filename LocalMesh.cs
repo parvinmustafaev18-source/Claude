@@ -112,7 +112,7 @@ namespace MeshPlugin
                 var regionAsPolys = new List<List<Point2d>> { region };
                 int clippedAtRegion, removedInRegion;
                 var outer = ClipSegmentsOutsideColumns(meshSegs, regionAsPolys, out clippedAtRegion, out removedInRegion);
-                ed.WriteMessage($"Старая сетка в области: удалено отрезков целиком {removedInRegion}, подрезано по границе {clippedAtRegion}\n");
+                ed.WriteMessage($"Старая сетка в области: под снос отрезков {removedInRegion}, под подрезку по границе {clippedAtRegion}\n");
 
                 // ---- ЯКОРЯ ---------------------------------------------------------
                 // Узлы окружающей сетки, сидящие на границе области. К ним новая сетка
@@ -166,19 +166,45 @@ namespace MeshPlugin
                     return;
                 }
 
-                var cutPts = new List<Point2d>();
+                var cutMarks = new List<ProblemMark>();
                 var wallsIn = ClipSegmentsToContour(allWalls, region, out _, out _);
                 var fixedIn = ClipSegmentsToContour(GetWallSegments(tr, db, true), region, out _, out _);
                 var crossesIn = ClipSegmentsToContour(GetPylonCrossConstraints(tr, db), region, out _, out _);
 
-                var columnsIn = SelectPolysInsideRegion(GetColumnPolygons(tr, db), region, cutPts);
-                var holesIn = SelectPolysInsideRegion(GetHolePolygons(tr, db), region, cutPts);
-                var pylonsIn = SelectPolysInsideRegion(GetPylonOutlines(tr, db, out _, out _), region, cutPts);
+                // Контур, рассечённый границей области, обрезается по ней: ядру нужна
+                // пустота, целиком лежащая внутри переданного контура, а то, что
+                // осталось снаружи, и так представлено нетронутой сеткой. Обрезка идёт
+                // Сазерлендом–Ходжманом, а он верен только для ВЫПУКЛОЙ области —
+                // поэтому выпуклость проверяется, и на вогнутой области рассечённый
+                // контур по-прежнему отказ.
+                bool convex = IsConvexPolygon(region);
+                int clippedHoles = 0, clippedColumns = 0, clippedRects = 0;
 
-                if (cutPts.Count > 0)
+                var columnsIn = ClipPolysToRegion(GetColumnPolygons(tr, db), region, convex, false,
+                    cutMarks, "область режет пилон", ref clippedColumns);
+                var holesIn = ClipPolysToRegion(GetHolePolygons(tr, db), region, convex, false,
+                    cutMarks, "область режет отверстие", ref clippedHoles);
+                // Отпечаток пилона ядро описывает ПРЯМОУГОЛЬНИКОМ (мелкая сетка внутри
+                // строится по габаритам). Обрезанный угол перестал бы им быть, поэтому
+                // от обрезанного отпечатка требуется остаться прямоугольником.
+                var pylonsIn = ClipPolysToRegion(GetPylonOutlines(tr, db, out _, out _), region, convex, true,
+                    cutMarks, "область режет отпечаток пилона", ref clippedRects);
+
+                if (clippedHoles + clippedColumns + clippedRects > 0)
+                    ed.WriteMessage($"Обрезано границей области: отверстий {clippedHoles}, пилонов {clippedColumns}, отпечатков {clippedRects} — внутри области считается только попавшая в неё часть\n");
+
+                if (cutMarks.Count > 0)
                 {
-                    DrawProblemMarks(tr, db, ProblemMark.From(cutPts, "граница области режет контур"));
-                    ed.WriteMessage($"\nОшибка: граница области пересекает контуры отверстий/пилонов: {cutPts.Count}. Такой контур нельзя ни отдать ядру целиком, ни разрезать. Обведите область так, чтобы отверстия и пилоны попадали в неё целиком или не попадали вовсе. Сетка не тронута, места отмечены кругами в слое {ProblemLayerName}.\n");
+                    DrawProblemMarks(tr, db, cutMarks);
+                    var where = new List<string>();
+                    foreach (var m in cutMarks) where.Add($"({m.Pt.X:0}, {m.Pt.Y:0})");
+                    ed.WriteMessage($"\nОшибка: граница области рассекает контуры, которые разрезать нечем: {cutMarks.Count} шт., центры {string.Join(", ", where)}.\n" +
+                        (convex
+                            ? "Это отпечаток пилона: его внутренняя сетка строится по габаритному прямоугольнику, и срезанный угол им уже не описать.\n"
+                            : "Контур области ВОГНУТЫЙ, а обрезка отверстий и пилонов верна только для выпуклой области.\n") +
+                        $"Что сделать: сдвинуть границу области так, чтобы эти контуры попадали в неё целиком или не попадали вовсе" +
+                        (convex ? "" : ", либо обвести область выпуклым контуром (прямоугольником)") +
+                        $". Сетка не тронута, места отмечены кругами в слое {ProblemLayerName}.\n");
                     tr.Commit();
                     return;
                 }
@@ -367,20 +393,25 @@ namespace MeshPlugin
             }
         }
 
-        // Контуры, целиком попавшие в область, — на вход ядру. Контур, который
-        // граница области РАССЕКАЕТ, в список не попадает: ядру его отдать нельзя
-        // (он нарушит жёсткое правило «внутри контура»), а разрезать полигон —
-        // отдельная задача, которая инженеру всё равно не нужна. Центр такого
-        // контура уходит в cutPts, и команда отказывается работать.
-        private List<List<Point2d>> SelectPolysInsideRegion(
-            List<List<Point2d>> polys, List<Point2d> region, List<Point2d> cutPts)
+        // Контуры пустот (отверстия, пилоны, отпечатки), попавшие в область.
+        // Целиком внутри — как есть. Рассечённый границей области ОБРЕЗАЕТСЯ по
+        // ней: ядро требует, чтобы пустота целиком лежала внутри переданного
+        // контура (иначе это «отверстие вне плиты» и остановка), а часть, оставшаяся
+        // снаружи, и так представлена нетронутой сеткой. Обрезка — Сазерленд–Ходжман
+        // по рёбрам области, она верна только для ВЫПУКЛОЙ области.
+        // Контур, который обрезать нельзя (вогнутая область; отпечаток пилона, от
+        // которого после среза не остаётся прямоугольника), уходит в cutMarks, и
+        // команда отказывается работать.
+        private List<List<Point2d>> ClipPolysToRegion(
+            List<List<Point2d>> polys, List<Point2d> region, bool regionConvex, bool mustStayRect,
+            List<ProblemMark> cutMarks, string cutText, ref int clippedCount)
         {
-            var inside = new List<List<Point2d>>();
+            var result = new List<List<Point2d>>();
             int rn = region.Count;
 
             foreach (var poly in polys)
             {
-                if (IsPolygonInsideContour(poly, region)) { inside.Add(poly); continue; }
+                if (IsPolygonInsideContour(poly, region)) { result.Add(poly); continue; }
 
                 bool touches = false;
                 foreach (var p in poly)
@@ -394,11 +425,60 @@ namespace MeshPlugin
                             if (SegmentsIntersect(poly[i], poly[(i + 1) % pn], region[j], region[(j + 1) % rn]))
                             { touches = true; break; }
                 }
+                if (!touches) continue;   // контур вне области — ядру он не нужен
 
-                if (touches) cutPts.Add(PolygonCentroid(poly));
+                if (!regionConvex) { cutMarks.Add(new ProblemMark(PolygonCentroid(poly), cutText)); continue; }
+
+                var clipped = CleanupPolygon(ClipPolygonToConvexRegion(poly, region));
+                if (clipped.Count < 3 || Math.Abs(PolygonArea(clipped)) < MeshTol.MinArea)
+                    continue;   // задел область только кромкой — считать нечего
+
+                if (mustStayRect)
+                {
+                    var bb = PolygonBBox(clipped);
+                    double b = bb[2] - bb[0], h = bb[3] - bb[1];
+                    if (b < 1.0 || h < 1.0 ||
+                        Math.Abs(Math.Abs(PolygonArea(clipped)) - b * h) > 0.05 * b * h)
+                    {
+                        cutMarks.Add(new ProblemMark(PolygonCentroid(poly), cutText));
+                        continue;
+                    }
+                }
+
+                EnsureCcw(clipped);
+                result.Add(clipped);
+                clippedCount++;
             }
 
-            return inside;
+            return result;
+        }
+
+        // Обрезка полигона по выпуклой области: та же схема Сазерленда–Ходжмана, что
+        // у обрезки ячейки (ClipPolygonToConvexCell), только область — список вершин.
+        private List<Point2d> ClipPolygonToConvexRegion(List<Point2d> subject, List<Point2d> region)
+        {
+            var result = new List<Point2d>(subject);
+            int n = region.Count;
+            for (int i = 0; i < n && result.Count > 0; i++)
+                result = ClipPolygonAgainstEdge(result, region[i], region[(i + 1) % n]);
+            return result;
+        }
+
+        // Выпуклость полигона, обойдённого против часовой: все повороты в одну сторону.
+        // Нужна ровно затем, чтобы знать, можно ли обрезать по нему пустоты.
+        private bool IsConvexPolygon(List<Point2d> poly)
+        {
+            int n = poly.Count;
+            if (n < 3) return false;
+            bool neg = false, pos = false;
+            for (int i = 0; i < n; i++)
+            {
+                double cr = CrossProduct(poly[i], poly[(i + 1) % n], poly[(i + 2) % n]);
+                if (cr < -MeshTol.MinArea) neg = true;
+                else if (cr > MeshTol.MinArea) pos = true;
+                if (neg && pos) return false;
+            }
+            return true;
         }
 
         // Координаты вне габарита области как цели выравнивания бесполезны: они

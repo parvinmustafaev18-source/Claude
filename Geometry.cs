@@ -82,6 +82,195 @@ namespace MeshPlugin
             return Math.Min(alpha, avg);
         }
 
+        // РАЗБИЕНИЕ ГРАНИ С ВИСЯЧИМИ УЗЛАМИ НА ЧЕТЫРЁХУГОЛЬНИКИ.
+        //
+        // Грань планарного графа с более чем 4 узлами — это почти всегда обычная
+        // ячейка, на ребро которой сел лишний узел соседа (переход между сетками
+        // разной плотности, кромка участка другой толщины, отпечаток пилона).
+        // Выбросить такой узел нельзя: в ЛИРЕ связь идёт только через общие узлы.
+        // Раньше такая грань уходила в ear-clipping и превращалась в веер
+        // треугольников — в чертеже этого не видно (линии те же), а в ЛИРЕ вдоль
+        // всей границы появлялась полоса тонких КЭ 42.
+        //
+        // Здесь грань режется на ЧЕТЫРЁХУГОЛЬНИКИ: по одному «квадро-уху» за шаг
+        // (четыре подряд идущие вершины), остаток n-2 вершины — то есть 5-угольник
+        // даёт квад + треугольник, 6-угольник два квада, 7 — два квада и
+        // треугольник. Ухо выбирается по качеству α, поэтому вырожденный вариант
+        // (три точки на одной прямой — а именно так лежит висячий узел) сам
+        // проигрывает. Возвращаются ИНДЕКСЫ вершин исходной грани: вызывающему
+        // нужны номера узлов, а не координаты. null — разбить не удалось,
+        // вызывающий остаётся с прежней триангуляцией.
+        private List<int[]> SplitFaceToQuads(List<Point2d> poly)
+        {
+            int n = poly.Count;
+            if (n < 5) return null;
+            if (n > 12) return null;   // такая грань — не ячейка с висячими узлами
+
+            var idx = new List<int>();
+            for (int i = 0; i < n; i++) idx.Add(i);
+
+            var res = new List<int[]>();
+            int guard = 0;
+
+            while (idx.Count > 4)
+            {
+                if (++guard > 24) return null;
+                int m = idx.Count;
+
+                // Сначала ищем «квадро-ухо»: четыре подряд идущие вершины. Оценка —
+                // не только качество самого уха, но и ОСТАТКА: лучшее по α ухо сплошь
+                // и рядом оставляет три точки на одной прямой (висячий узел именно
+                // так и лежит), и такой остаток элементом быть не может.
+                double best = -1; int bestStart = -1;
+                for (int i = 0; i < m; i++)
+                {
+                    var q = new Point2d[]
+                    {
+                        poly[idx[i]], poly[idx[(i + 1) % m]],
+                        poly[idx[(i + 2) % m]], poly[idx[(i + 3) % m]]
+                    };
+                    if (!IsConvexQuad(q)) continue;
+                    if (!DiagonalInsidePolygon(poly, idx, i, (i + 3) % m)) continue;
+
+                    double score = Math.Min(QuadAlpha(q),
+                        RestScore(poly, RingWithout(idx, (i + 1) % m, (i + 2) % m)));
+                    if (score > best) { best = score; bestStart = i; }
+                }
+
+                if (bestStart >= 0 && best >= 0.02)
+                {
+                    res.Add(new int[]
+                    {
+                        idx[bestStart], idx[(bestStart + 1) % m],
+                        idx[(bestStart + 2) % m], idx[(bestStart + 3) % m]
+                    });
+                    idx = RingWithout(idx, (bestStart + 1) % m, (bestStart + 2) % m);
+                    continue;
+                }
+
+                // Квадро-ухо не нашлось (так бывает, когда на одном ребре сидят два
+                // висячих узла подряд): срезаем лучшее ТРЕУГОЛЬНОЕ ухо и продолжаем —
+                // следующий шаг снова попробует четырёхугольник.
+                double tBest = -1; int tStart = -1;
+                for (int i = 0; i < m; i++)
+                {
+                    if (!DiagonalInsidePolygon(poly, idx, i, (i + 2) % m)) continue;
+                    double a = TriangleAlpha(poly[idx[i]], poly[idx[(i + 1) % m]], poly[idx[(i + 2) % m]]);
+                    double score = Math.Min(a, RestScore(poly, RingWithout(idx, (i + 1) % m, -1)));
+                    if (score > tBest) { tBest = score; tStart = i; }
+                }
+
+                if (tStart < 0 || tBest < 0.02) return null;
+                res.Add(new int[] { idx[tStart], idx[(tStart + 1) % m], idx[(tStart + 2) % m] });
+                idx = RingWithout(idx, (tStart + 1) % m, -1);
+            }
+
+            if (idx.Count == 3)
+            {
+                res.Add(new int[] { idx[0], idx[1], idx[2] });
+            }
+            else if (idx.Count == 4)
+            {
+                var p = new Point2d[] { poly[idx[0]], poly[idx[1]], poly[idx[2]], poly[idx[3]] };
+                if (QuadAlpha(p) >= 0.02)
+                {
+                    res.Add(new int[] { idx[0], idx[1], idx[2], idx[3] });
+                }
+                else
+                {
+                    // Вырожденный четырёхугольник (три точки на прямой) элементом
+                    // быть не может — режем его на два треугольника по лучшей диагонали.
+                    int which;
+                    if (BestTriPair(p, out which) < 0.02) return null;
+                    if (which == 0)
+                    {
+                        res.Add(new int[] { idx[0], idx[1], idx[2] });
+                        res.Add(new int[] { idx[0], idx[2], idx[3] });
+                    }
+                    else
+                    {
+                        res.Add(new int[] { idx[1], idx[2], idx[3] });
+                        res.Add(new int[] { idx[1], idx[3], idx[0] });
+                    }
+                }
+            }
+            else return null;
+
+            return res;
+        }
+
+        // Кольцо вершин без одной или двух позиций (drop2 < 0 — убрать только одну).
+        private static List<int> RingWithout(List<int> idx, int drop1, int drop2)
+        {
+            var res = new List<int>(idx.Count);
+            for (int i = 0; i < idx.Count; i++)
+                if (i != drop1 && i != drop2) res.Add(idx[i]);
+            return res;
+        }
+
+        // Годность остатка: треугольник — своя α; четырёхугольник — лучшее из «он сам»
+        // и «два треугольника по лучшей диагонали» (вырожденный квад мы потом так и
+        // разрежем); остаток длиннее уйдёт на следующий виток и здесь не штрафуется.
+        private double RestScore(List<Point2d> poly, List<int> rest)
+        {
+            if (rest.Count == 3)
+                return TriangleAlpha(poly[rest[0]], poly[rest[1]], poly[rest[2]]);
+            if (rest.Count == 4)
+            {
+                var p = new Point2d[] { poly[rest[0]], poly[rest[1]], poly[rest[2]], poly[rest[3]] };
+                int which;
+                return Math.Max(QuadAlpha(p), BestTriPair(p, out which));
+            }
+            return 1.0;
+        }
+
+        // Четыре точки -> два треугольника по лучшей диагонали: худшая α пары и номер
+        // диагонали (0 — через вершины 0-2, 1 — через 1-3).
+        private double BestTriPair(Point2d[] p, out int which)
+        {
+            double a = Math.Min(TriangleAlpha(p[0], p[1], p[2]), TriangleAlpha(p[0], p[2], p[3]));
+            double b = Math.Min(TriangleAlpha(p[1], p[2], p[3]), TriangleAlpha(p[1], p[3], p[0]));
+            which = a >= b ? 0 : 1;
+            return a >= b ? a : b;
+        }
+
+        // Диагональ между вершинами a и b текущего (уже урезанного) контура лежит
+        // внутри грани: не пересекает её сторон и середина внутри. Нужна против
+        // вогнутых граней, где «ухо» может оказаться снаружи.
+        private bool DiagonalInsidePolygon(List<Point2d> poly, List<int> idx, int a, int b)
+        {
+            int m = idx.Count;
+            Point2d pa = poly[idx[a]], pb = poly[idx[b]];
+
+            for (int i = 0; i < m; i++)
+            {
+                int j = (i + 1) % m;
+                if (i == a || j == a || i == b || j == b) continue;
+                if (SegmentsIntersect(pa, pb, poly[idx[i]], poly[idx[j]])) return false;
+            }
+
+            var ring = new List<Point2d>();
+            foreach (int i in idx) ring.Add(poly[i]);
+            Point2d mid = new Point2d((pa.X + pb.X) / 2.0, (pa.Y + pb.Y) / 2.0);
+            return IsPointInPolygon(mid, ring);
+        }
+
+        // Четырёхугольник прямоугольный (все углы 90°) — тогда в ЛИРУ уходит КЭ 41,
+        // иначе КЭ 44. Порядок узлов одинаков, отличается только тип элемента.
+        private bool IsRectQuad(Point2d p0, Point2d p1, Point2d p2, Point2d p3)
+        {
+            var q = new Point2d[] { p0, p1, p2, p3 };
+            for (int i = 0; i < 4; i++)
+            {
+                Point2d pp = q[(i + 3) % 4], pc = q[i], pn = q[(i + 1) % 4];
+                double l1 = pc.GetDistanceTo(pp), l2 = pc.GetDistanceTo(pn);
+                if (l1 < 1e-9 || l2 < 1e-9) return false;
+                double dot = ((pp.X - pc.X) * (pn.X - pc.X) + (pp.Y - pc.Y) * (pn.Y - pc.Y)) / (l1 * l2);
+                if (Math.Abs(dot) > 1e-3) return false;
+            }
+            return true;
+        }
+
         private bool QuadShapeOk(Point2d[] quad)
         {
             return QuadAlpha(quad) >= MinQualityAlpha;
