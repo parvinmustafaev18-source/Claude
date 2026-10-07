@@ -34,7 +34,7 @@ description: AutoCAD .NET-плагин MeshPlugin (partial class Commands), ст
 
 `LIRLAYERS` → `LIRWALLAXIS` и/или `LIRWALLS` → `LIRDOORS` →
 `LIRPYLON` (пилоны) → при нужде `LIRWALLJOIN` → `LIRCHECK`
-(проверка входа) → `LIRBUILD` → при нужде `LIRTHICK` (зоны утолщения
+(проверка входа) → `LIRBUILD` → при нужде `LIRTHICK` (участки другой толщины
 плиты: правят ГОТОВУЮ сетку, не строят заново) → `LIREXPORT`
 (skill `lira-sapr-mesh-export`).
 

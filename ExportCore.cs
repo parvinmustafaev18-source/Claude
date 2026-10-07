@@ -26,7 +26,7 @@ namespace MeshPlugin
         public List<List<Point2d>> HolePolys = new List<List<Point2d>>();
         public List<List<Point2d>> PylonRects = new List<List<Point2d>>();
 
-        // Зоны локального утолщения плиты (слои MESH_THICK(H-...)): элементы плиты,
+        // Участки плиты другой толщины (слои MESH_THICK(H-...)): элементы плиты,
         // чей центр попал внутрь контура, получают СВОЮ жёсткость с толщиной зоны.
         // Геометрию схемы это не меняет — только номер жёсткости у этих элементов.
         public List<ThickZone> ThickZones = new List<ThickZone>();
@@ -332,7 +332,7 @@ namespace MeshPlugin
                 }
             }
 
-            // ЛОКАЛЬНОЕ УТОЛЩЕНИЕ ПЛИТЫ — своя жёсткость на каждую толщину зоны.
+            // ПЛИТА ДРУГОЙ ТОЛЩИНЫ НА УЧАСТКЕ — своя жёсткость на каждую толщину.
             // Признак тот же, что у отверстий и тела пилона: ЦЕНТР готового элемента
             // внутри контура зоны. Граница зоны лежит ровно по рёбрам элементов
             // (её подтягивает LIRTHICK), поэтому элемент либо целиком в зоне, либо
@@ -341,13 +341,13 @@ namespace MeshPlugin
             // ПОРЯДОК ВАЖЕН: блок стоит ДО тела пилона, и пилон его перебивает.
             // Пилон от толщины плиты под ним не меняется ничем: ни номером
             // жёсткости, ни толщиной, ни строкой в легенде (решение пользователя,
-            // 07.10.2026). Утолщение достаётся только пластинам самой плиты.
+            // 07.10.2026). Другая толщина достаётся только пластинам самой плиты.
             int thickElems = 0;
             var thickStiffIds = new Dictionary<double, int>();
             if (thickZones.Count > 0)
             {
                 // Зоны по возрастанию площади: вложенная (меньшая) перебивает
-                // внешнюю, поэтому утолщение внутри утолщения считается правильно.
+                // внешнюю, поэтому участок внутри участка считается правильно.
                 var zonesBySize = new List<ThickZone>(thickZones);
                 zonesBySize.Sort((p, q) => Math.Abs(PolygonArea(p.Poly)).CompareTo(Math.Abs(PolygonArea(q.Poly))));
 
@@ -368,7 +368,7 @@ namespace MeshPlugin
                         {
                             thickStiffIds[tz] = sid = nextStiff++;
                             wallStiffThk[sid] = tz;
-                            wallStiffTitle[sid] = $"утолщение плиты H-{tz:0.#}";
+                            wallStiffTitle[sid] = $"плита другой толщины H-{tz:0.#}";
                         }
                         el[1] = sid;
                         thickElems++;
@@ -619,7 +619,7 @@ namespace MeshPlugin
             res.Log.Add($"\nЭкспортировано: узлов {nodes3.Count}; плита: КЭ 41 {rectCount}, КЭ 44 {quadCount}, КЭ 42 {triCount} (вееров под пилонами: {fanFaces}); стены: КЭ 44 {wallElemCount} (толщин: {wallStiffIds.Count}); пилоны: стержней КЭ 10 {barCount} (сечений: {colStiffIds.Count})" +
                 $"; осей пилонов (PILON) в чертеже: {wallOrigIsPylon.FindAll(p => p).Count}" +
                 (holePolys.Count > 0 ? $"; отверстий: {holePolys.Count} (удалено элементов внутри: {holeElemsRemoved})" : "")
-                + (thickZones.Count > 0 ? $"; зоны утолщения: контуров {thickZones.Count}, элементов плиты в них {thickElems} (толщин: {thickStiffIds.Count})" : "")
+                + (thickZones.Count > 0 ? $"; участки другой толщины: контуров {thickZones.Count}, элементов плиты в них {thickElems} (толщин: {thickStiffIds.Count})" : "")
                 + (pylonRects.Count > 0 ? $"; тела пилонов: контуров {pylonRects.Count}, элементов плиты в них {pylonBodyElems}" + (pylonBodyStiffId > 0 ? $" (жёсткость №{pylonBodyStiffId})" : "") : "") +
                 (doorOrig.Count > 0 ? $"; дверных проёмов: {doorOrig.Count} (врезано узлов на косяках: {doorJambSplits}, кусков стены под дверью: {doorPiers}, пропущено рядов КЭ 44: {doorRowsSkipped})" : "") +
                 (failedFaces > 0 ? $"; потеряно граней: {failedFaces}" : "") +

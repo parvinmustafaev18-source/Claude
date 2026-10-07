@@ -8,15 +8,16 @@ using System.Collections.Generic;
 
 namespace MeshPlugin
 {
-    // ЛОКАЛЬНОЕ УТОЛЩЕНИЕ ПЛИТЫ.
+    // ПЛИТА ДРУГОЙ ТОЛЩИНЫ НА УЧАСТКЕ.
     //
-    // Под пилонами и в зонах продавливания плиту делают толще, чем вокруг: та же
-    // плита, тот же уровень, но другая толщина в пределах замкнутого контура.
+    // Под пилонами, в зонах продавливания и под стенами плита бывает другой
+    // толщины, чем вокруг: та же плита, тот же уровень, но в пределах замкнутого
+    // контура толщина своя (обычно больше, но правило её не ограничивает).
     // В ЛИРУ это уходит как ОТДЕЛЬНАЯ жёсткость пластин — геометрия схемы не
     // меняется, меняется только номер жёсткости у элементов внутри зоны.
     //
-    // Почему отдельная команда, а не этап построения. Сетка к моменту появления
-    // утолщения уже построена и, как правило, поправлена инженером руками; гнать
+    // Почему отдельная команда, а не этап построения. К моменту, когда участок
+    // появляется, сетка уже построена и, как правило, поправлена инженером руками; гнать
     // LIRBUILD заново — значит выбросить эту работу. Поэтому LIRTHICK правит
     // ГОТОВУЮ сетку на месте: двигает к контуру узлы, которые к нему близко,
     // режет рёбра, которые его пересекают, и добавляет недостающие рёбра по самому
@@ -28,22 +29,22 @@ namespace MeshPlugin
         public double ThicknessMm;                          // толщина плиты в зоне, мм
     }
 
-    // Вход подтяжки сетки к контурам утолщения. Как и у MeshCore, здесь только
+    // Вход подтяжки сетки к контурам участков. Как и у MeshCore, здесь только
     // геометрия: ни Editor, ни Transaction, ни Database — чтобы расчёт можно было
     // прогнать без AutoCAD.
     internal class ThickFitInput
     {
         public List<Point2d[]> Segments = new List<Point2d[]>();   // текущие линии сетки
-        public List<ThickZone> Zones = new List<ThickZone>();      // контуры утолщений
+        public List<ThickZone> Zones = new List<ThickZone>();      // контуры участков
         public double Tolerance = 120.0;                            // допуск подтяжки узла, мм
 
         // Узлы, которые двигать НЕЛЬЗЯ: контуры пилонов (отпечаток обязан остаться
-        // прежним — пилон от утолщения не меняется ничем), кромки отверстий и контур
-        // самой плиты. Сдвинув такой узел, мы сломали бы чужое построение ради
+        // прежним — пилон от другой толщины плиты не меняется ничем), кромки
+        // отверстий и контур самой плиты. Сдвинув такой узел, мы сломали бы чужое построение ради
         // косметики на границе зоны.
         public List<List<Point2d>> FixedPolys = new List<List<Point2d>>();
 
-        // Контур плиты: зона утолщения обязана лежать внутри него (то же жёсткое
+        // Контур плиты: участок обязан лежать внутри него (то же жёсткое
         // правило, что у отверстий). null — контура в чертеже не нашлось, проверка
         // пропускается с предупреждением.
         public List<Point2d> Contour;
@@ -69,7 +70,7 @@ namespace MeshPlugin
 
     public partial class Commands
     {
-        // Слой зоны утолщения: MESH_THICK(H-<толщина>), по слою на каждую толщину.
+        // Слой участка: MESH_THICK(H-<толщина>), по слою на каждую толщину.
         // Семейство то же, что MESH_HOLES и MESH_PYLONS: такие контуры читаются
         // ПО СЛОЮ, без указания мышью, и толщина живёт в имени слоя — как у
         // FOUNDATION_SLABS(H-...). Префикс начинается с MESH_, поэтому слой
@@ -82,7 +83,7 @@ namespace MeshPlugin
             return !string.IsNullOrEmpty(layer) && layer.StartsWith(ThickLayerPrefix);
         }
 
-        // Замкнутые контуры утолщений со всех слоёв MESH_THICK(H-...). Толщина —
+        // Замкнутые контуры участков со всех слоёв MESH_THICK(H-...). Толщина —
         // из имени слоя; слой без "H-" пропускается: безымянная толщина в ЛИРУ
         // не уйдёт, а молча подставлять толщину плиты опаснее, чем пропустить.
         private List<ThickZone> GetThickZones(Transaction tr, Database db, out int skippedOpen, out int skippedNoThickness)
@@ -140,7 +141,7 @@ namespace MeshPlugin
             return best;
         }
 
-        // ПОДТЯЖКА ГОТОВОЙ СЕТКИ К КОНТУРАМ УТОЛЩЕНИЯ.
+        // ПОДТЯЖКА ГОТОВОЙ СЕТКИ К КОНТУРАМ УЧАСТКОВ.
         //
         // Смысл в том, чтобы граница зоны прошла РОВНО ПО РЁБРАМ элементов. Иначе
         // элемент оказывается наполовину в зоне, и его толщину решает положение
@@ -164,7 +165,7 @@ namespace MeshPlugin
             if (input.Zones.Count == 0)
             {
                 res.Ok = false;
-                res.Error = "\nНи одного контура утолщения — нечего подтягивать.\n";
+                res.Error = "\nНи одного контура участка другой толщины — нечего подтягивать.\n";
                 return res;
             }
             if (input.Segments.Count == 0)
@@ -176,7 +177,7 @@ namespace MeshPlugin
 
             double tol = input.Tolerance;
 
-            // Жёсткое правило: зона утолщения не выходит за контур плиты. Та же
+            // Жёсткое правило: участок не выходит за контур плиты. Та же
             // проверка и тот же отказ, что у отверстий, — иначе дальше мы добавим
             // в сетку рёбра снаружи плиты и нарушим правило 1.
             if (input.Contour != null && input.Contour.Count >= 3)
@@ -189,14 +190,14 @@ namespace MeshPlugin
                 if (outside.Count > 0)
                 {
                     res.Ok = false;
-                    res.ProblemPts.AddRange(ProblemMark.From(outside, "утолщение вне плиты"));
-                    res.Error = $"\nОшибка: контуров утолщения вне контура плиты: {outside.Count}. Зона утолщения обязана целиком лежать в пределах плиты. Команда остановлена, сетка не тронута. Проблемные места отмечены кругами в слое {ProblemLayerName}.\n";
+                    res.ProblemPts.AddRange(ProblemMark.From(outside, "участок вне плиты"));
+                    res.Error = $"\nОшибка: контуров участков вне контура плиты: {outside.Count}. Участок обязан целиком лежать в пределах плиты. Команда остановлена, сетка не тронута. Проблемные места отмечены кругами в слое {ProblemLayerName}.\n";
                     return res;
                 }
             }
             else
             {
-                res.Log.Add($"\nВНИМАНИЕ: контур плиты (слой {SlabLayerPrefix}H-...)) не найден — проверка «утолщение внутри плиты» пропущена.\n");
+                res.Log.Add($"\nВНИМАНИЕ: контур плиты (слой {SlabLayerPrefix}H-...)) не найден — проверка «участок другой толщины внутри плиты» пропущена.\n");
             }
 
             // ---- 1. АКТИВНАЯ ПОЛОСА --------------------------------------------
@@ -233,7 +234,7 @@ namespace MeshPlugin
             if (active.Count == 0)
             {
                 res.Ok = false;
-                res.Error = "\nРядом с контурами утолщения нет ни одной линии сетки. Проверьте, что контур нарисован на плите и сетка построена.\n";
+                res.Error = "\nРядом с контурами участков нет ни одной линии сетки. Проверьте, что контур нарисован на плите и сетка построена.\n";
                 return res;
             }
 
@@ -257,7 +258,7 @@ namespace MeshPlugin
 
             // Неподвижная геометрия: узел, сидящий на контуре пилона, кромке
             // отверстия или на контуре плиты, остаётся на месте. Пилон от появления
-            // утолщения не должен измениться ничем — ни отпечатком, ни узлами.
+            // участка другой толщины не должен измениться ничем — ни отпечатком, ни узлами.
             bool IsFixedNode(Point2d p)
             {
                 foreach (var poly in input.FixedPolys)
@@ -365,21 +366,21 @@ namespace MeshPlugin
             res.Segments.AddRange(passive);
             res.Segments.AddRange(work);
 
-            res.Log.Add($"\nЗон утолщения: {input.Zones.Count}, рёбер контура: {zoneEdges}; допуск подтяжки: {tol:0.#} мм\n");
-            res.Log.Add($"Линий сетки в работе (полоса вокруг зон): {active.Count} из {input.Segments.Count}; после правки их {work.Count}\n");
+            res.Log.Add($"\nУчастков плиты другой толщины: {input.Zones.Count}, рёбер контура: {zoneEdges}; допуск подтяжки: {tol:0.#} мм\n");
+            res.Log.Add($"Линий сетки в работе (полоса вокруг участков): {active.Count} из {input.Segments.Count}; после правки их {work.Count}\n");
             res.Log.Add($"Узлов подтянуто на контур: {res.MovedNodes}" +
                 (res.KeptFixed > 0 ? $"; оставлено на месте (узлы пилонов, отверстий, контура плиты): {res.KeptFixed}" : "") + "\n");
             res.Log.Add($"Врезано узлов в пересечения: {res.SplitCrossings}; рёбер разрезано узлом: {res.SplitAtNodes}" +
                 (res.WeldedEdges > 0 ? $"; схлопнулось рёбер при подтяжке: {res.WeldedEdges}" : "") + "\n");
             if (res.ShortEdges > 0)
-                res.Log.Add($"ВНИМАНИЕ: рёбер короче {MeshTol.MinElementSize:0} мм: {res.ShortEdges} — у границы зоны остались узкие элементы. Обычно помогает больший допуск подтяжки.\n");
+                res.Log.Add($"ВНИМАНИЕ: рёбер короче {MeshTol.MinElementSize:0} мм: {res.ShortEdges} — у границы участка остались узкие элементы. Обычно помогает больший допуск подтяжки.\n");
             if (res.CrossingsLeft > 0)
                 res.Log.Add($"ВНИМАНИЕ: пересечений линий без узла осталось: {res.CrossingsLeft} (жёсткое правило 6).\n");
 
             return res;
         }
 
-        // КОМАНДА: зона локального утолщения плиты.
+        // КОМАНДА: участок плиты другой толщины.
         //
         // Контур рисует инженер, команда его классифицирует (уводит на слой
         // MESH_THICK(H-...)) и подтягивает к нему ГОТОВУЮ сетку. Построение заново
@@ -393,7 +394,7 @@ namespace MeshPlugin
             Database db = doc.Database;
 
             PromptSelectionOptions pso = new PromptSelectionOptions();
-            pso.MessageForAdding = "\nВыберите контуры зон утолщения плиты (замкнутые полилинии): ";
+            pso.MessageForAdding = "\nВыберите контуры участков плиты другой толщины (замкнутые полилинии): ";
             SelectionFilter filter = new SelectionFilter(new TypedValue[] { new TypedValue((int)DxfCode.Start, "LWPOLYLINE") });
             PromptSelectionResult psr = ed.GetSelection(pso, filter);
             if (psr.Status != PromptStatus.OK)
@@ -402,7 +403,7 @@ namespace MeshPlugin
                 return;
             }
 
-            PromptDoubleOptions pdoT = new PromptDoubleOptions("\nТолщина плиты в зоне утолщения, мм: ");
+            PromptDoubleOptions pdoT = new PromptDoubleOptions("\nТолщина плиты на этом участке, мм: ");
             pdoT.DefaultValue = 500.0;
             pdoT.AllowNegative = false;
             pdoT.AllowZero = false;
@@ -445,7 +446,7 @@ namespace MeshPlugin
                     if (pl == null) continue;
 
                     // Чужие служебные контуры (отверстия, пилоны, сам контур плиты)
-                    // в зону утолщения не превращаем: такой «перенос» молча сломал бы
+                    // в участок другой толщины не превращаем: такой «перенос» молча сломал бы
                     // чтение этих слоёв другими командами.
                     if (!IsThickLayer(pl.Layer) &&
                         (pl.Layer == HoleLayerName || pl.Layer == PylonOutlineLayerName
@@ -459,7 +460,7 @@ namespace MeshPlugin
                     taken++;
                 }
 
-                ed.WriteMessage($"\nКонтуров принято в зону {zoneLayer}: {taken}" +
+                ed.WriteMessage($"\nКонтуров принято на слой {zoneLayer}: {taken}" +
                     (skippedOpen > 0 ? $", пропущено незамкнутых: {skippedOpen}" : "") +
                     (skippedArcs > 0 ? $", пропущено с дугами (ЛИРА дуги не принимает): {skippedArcs}" : "") +
                     (skippedService > 0 ? $", пропущено служебных контуров (отверстия/пилоны/плита): {skippedService}" : "") + "\n");
@@ -484,7 +485,7 @@ namespace MeshPlugin
                 ed.WriteMessage($"Линий сетки прочитано из {TriangulationLayerName}: {meshSegs.Count} (объектов: {meshEnts.Count})\n");
 
                 // Неподвижное: контуры пилонов и отверстий. Пилон обязан остаться
-                // ровно таким, каким был, — утолщение плиты его не касается.
+                // ровно таким, каким был, — другая толщина плиты его не касается.
                 var fixedPolys = new List<List<Point2d>>();
                 fixedPolys.AddRange(GetPylonOutlines(tr, db, out _, out _));
                 fixedPolys.AddRange(GetHolePolygons(tr, db));
@@ -523,7 +524,7 @@ namespace MeshPlugin
 
                 ed.WriteMessage($"Чертёж: оставлено без изменений отрезков {kept}, перерисовано {added}, удалено объектов {erased}\n");
                 ed.WriteMessage($"Расчёт подтяжки: {watch.Elapsed.TotalSeconds:0.0} с\n");
-                ed.WriteMessage($"Готово. Экспорт (LIREXPORT) даст элементам внутри зоны отдельную жёсткость с толщиной из имени слоя; пилоны внутри зоны останутся прежними.\n");
+                ed.WriteMessage($"Готово. Экспорт (LIREXPORT) даст элементам внутри участка отдельную жёсткость с толщиной из имени слоя; пилоны внутри участка останутся прежними.\n");
                 ed.WriteMessage($"ВНИМАНИЕ: повторный LIRBUILD строит сетку заново и эту правку (вместе с ручными) потеряет — после него LIRTHICK нужно повторить.\n");
 
                 tr.Commit();
