@@ -183,6 +183,27 @@ namespace MeshPlugin
                     return;
                 }
 
+                // Участки другой толщины (MESH_THICK). Их кромки уже лежат в сетке —
+                // их врезал LIRTHICK, — и перестроение области их сотрёт вместе со
+                // старой сеткой. Поэтому они собираются здесь заново: прямые участки
+                // идут ЖЁСТКИМИ целями (линия сетки садится ровно на кромку), а сами
+                // кромки ниже добавляются рёбрами. Иначе после LIRREMESH граница
+                // участка внутри области пропадала бы, и экспорт раздавал бы толщину
+                // по центрам элементов, которые её пересекают.
+                int thickOpen, thickNoT;
+                var zones = GetThickZones(tr, db, out thickOpen, out thickNoT);
+                var zoneEdgesIn = new List<Point2d[]>();
+                foreach (var z in zones)
+                {
+                    int zn = z.Poly.Count;
+                    var edges = new List<Point2d[]>();
+                    for (int i = 0; i < zn; i++)
+                        edges.Add(new Point2d[] { z.Poly[i], z.Poly[(i + 1) % zn] });
+                    zoneEdgesIn.AddRange(ClipSegmentsToContour(edges, region, out _, out _));
+                }
+                if (zones.Count > 0)
+                    ed.WriteMessage($"Участков другой толщины ({ThickLayerPrefix}H-...)): {zones.Count}, их кромок внутри области: {zoneEdgesIn.Count}\n");
+
                 var doorEndsIn = new List<Point2d>();
                 foreach (var p in GetDoorEndpoints(tr, db))
                     if (IsPointInPolygon(p, region) || IsOnPolygonBoundary(p, region, MeshTol.Collinear))
@@ -215,6 +236,7 @@ namespace MeshPlugin
                     PylonRects = pylonsIn,
                     PylonCrosses = crossesIn,
                     FixedWallSegments = fixedIn,
+                    HardTargetSegments = zoneEdgesIn,
                     JambXs = jambXs,
                     JambYs = jambYs,
                     AxisXs = axisXs,
@@ -284,6 +306,11 @@ namespace MeshPlugin
                     if (a.GetDistanceTo(b) >= MeshTol.MinPiece) work.Add(new Point2d[] { a, b });
                 }
 
+                // Кромки участков другой толщины — ребром сетки, как в LIRTHICK.
+                // Наклонная кромка цели не даёт, но ребром стать обязана всё равно.
+                foreach (var e in zoneEdgesIn)
+                    if (e[0].GetDistanceTo(e[1]) >= MeshTol.MinPiece) work.Add(e);
+
                 int splitCount, dropped;
                 work = SplitSegmentsAtNodes(work, cellSize, out splitCount, out dropped);
                 int crossings;
@@ -326,6 +353,8 @@ namespace MeshPlugin
                 if (mesh.ProblemPts.Count > 0) DrawProblemMarks(tr, db, mesh.ProblemPts);
 
                 ed.WriteMessage($"Чертёж: оставлено без изменений отрезков {kept}, перерисовано {added}, удалено объектов {erased}\n");
+                if (zoneEdgesIn.Count > 0)
+                    ed.WriteMessage($"Кромки участков другой толщины внутри области восстановлены — повторять LIRTHICK не нужно.\n");
                 ed.WriteMessage($"Контур области остался в чертеже — его можно стереть, на экспорт он не влияет.\n");
                 ed.WriteMessage($"ВНИМАНИЕ: повторный LIRBUILD строит сетку заново и эту правку (вместе с ручными) потеряет.\n");
 
