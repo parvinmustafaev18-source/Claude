@@ -391,19 +391,39 @@ namespace MeshPlugin
 
                 // Сколько якорей новая сетка приняла линией насквозь, а сколько
                 // осталось Т-узлами (их соседняя грань уйдёт в ЛИРУ треугольниками).
-                var innerBoundary = new NodeIndex();
+                var ibSeen = new NodeIndex();
+                var ibNodes = new List<Point2d>();
                 foreach (var s in mesh.Segments)
                     for (int e = 0; e < 2; e++)
-                        if (IsOnPolygonBoundary(s[e], region, MeshTol.Collinear)) innerBoundary.GetNode(s[e]);
+                    {
+                        if (!IsOnPolygonBoundary(s[e], region, MeshTol.Collinear)) continue;
+                        int before = ibSeen.Nodes.Count;
+                        ibSeen.GetNode(s[e]);
+                        if (ibSeen.Nodes.Count > before) ibNodes.Add(s[e]);
+                    }
 
+                var ibGrid = new SpatialGrid(Math.Max(cellSize, 1.0));
+                for (int i = 0; i < ibNodes.Count; i++) ibGrid.Add(i, ibNodes[i]);
+
+                // Для несвязанного якоря важно не только «не связан», но и НАСКОЛЬКО
+                // промахнулись: доли миллиметра — это рассогласование координат
+                // (узлы почти совпали, но не слились), сотни миллиметров — линии
+                // новой сетки там просто нет. Диагноз разный, поэтому печатаем разброс.
                 int tied = 0;
                 var untied = new List<Point2d>();
+                double nearMin = double.MaxValue, nearMax = 0.0;
                 foreach (var a in anchors)
                 {
-                    int before = innerBoundary.Nodes.Count;
-                    innerBoundary.GetNode(a);
-                    if (innerBoundary.Nodes.Count == before) tied++;
-                    else untied.Add(a);
+                    double near = double.MaxValue;
+                    foreach (int i in ibGrid.QueryRadius(a, cellSize))
+                    {
+                        double d = a.GetDistanceTo(ibNodes[i]);
+                        if (d < near) near = d;
+                    }
+                    if (near < MeshTol.NodeMerge) { tied++; continue; }
+                    untied.Add(a);
+                    if (near < nearMin) nearMin = near;
+                    if (near > nearMax) nearMax = near;
                 }
 
                 ed.WriteMessage($"Стык: узлов окружающей сетки на границе {anchors.Count}, линия новой сетки продолжает {tied}" +
@@ -413,7 +433,7 @@ namespace MeshPlugin
                     var where = new List<string>();
                     for (int i = 0; i < untied.Count && i < 8; i++) where.Add($"({untied[i].X:0}, {untied[i].Y:0})");
                     ed.WriteMessage($"  Т-узлы: {string.Join(", ", where)}" + (untied.Count > 8 ? $" и ещё {untied.Count - 8}" : "") + "\n");
-                    ed.WriteMessage("  Обычная причина — край области: узел ближе половины шага к границе, линию туда не поставить. Если нужен сквозной стык по всем узлам, обводите область ПО ЛИНИЯМ существующей сетки.\n");
+                    ed.WriteMessage($"  Ближайший узел новой сетки к такому якорю: от {(nearMin < double.MaxValue ? nearMin : 0):0.###} до {nearMax:0.#} мм. Доли миллиметра — значит узлы почти совпали и разошлись на допуске; сотни миллиметров — линии новой сетки там нет (цель отвергнута краем области).\n");
                 }
                 // КОНТРОЛЬ СВЯЗНОСТИ. Узел, у которого ровно одно ребро, — оборванный
                 // конец: в ЛИРЕ он ничего не держит.
@@ -540,8 +560,17 @@ namespace MeshPlugin
                 newCoord[i] = coord[i];
                 var src = kind[i] == 'V' ? vx : hy;
 
-                // Покрытие грани по каждой координате: ключ — десятые доли мм.
+                // Покрытие грани по каждой координате. Ключ (десятые доли мм) нужен
+                // ТОЛЬКО чтобы сгруппировать отрезки одной линии; сама координата
+                // берётся ТОЧНАЯ, как в чертеже.
+                //
+                // Это не придирка. Граница области становится линией сетки, и узлы
+                // окружающей сетки обязаны лечь на неё РОВНО: NodeIndex сливает точки
+                // с допуском 0.001 мм. Первая версия ставила границу в округлённые
+                // 0.1 мм, и на реальном плане 07.10.2026 это развело почти все узлы
+                // на сотые доли миллиметра — 44 Т-стыка из 79 на ровном месте.
                 var cover = new Dictionary<long, double>();
+                var exact = new Dictionary<long, double>();
                 foreach (var L in src)
                 {
                     double ov = Math.Min(hi[i], L[2]) - Math.Max(lo[i], L[1]);
@@ -549,6 +578,7 @@ namespace MeshPlugin
                     long key = (long)Math.Round(L[0] * 10.0);
                     double had;
                     cover[key] = (cover.TryGetValue(key, out had) ? had : 0.0) + ov;
+                    if (!exact.ContainsKey(key)) exact[key] = L[0];
                 }
 
                 double need = 0.5 * (hi[i] - lo[i]);
@@ -556,7 +586,7 @@ namespace MeshPlugin
                 foreach (var kv in cover)
                 {
                     if (kv.Value < need) continue;
-                    double c = kv.Key / 10.0;
+                    double c = exact[kv.Key];
                     double delta = (c - coord[i]) * dir[i];
                     if (delta < MeshTol.MinPiece) continue;        // не внутрь
                     if (delta < bestDelta) { bestDelta = delta; newCoord[i] = c; }
