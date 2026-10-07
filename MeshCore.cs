@@ -34,6 +34,14 @@ namespace MeshPlugin
         // идёт к ним — координаты прямых участков становятся жёсткими целями.
         public List<Point2d[]> FixedWallSegments = new List<Point2d[]>();
 
+        // Прямые участки, на которые линия сетки обязана сесть, но пришедшие не от
+        // закрепления осей, а от геометрии: кромки участков другой толщины
+        // (MESH_THICK) при локальном перестроении. Семантика та же, что у кромки
+        // отверстия, — линия либо двигается на цель, либо вставляется новая.
+        // В splitConstraints такие кромки класть НЕЛЬЗЯ: разрез ячеек идёт по
+        // БЕСКОНЕЧНОЙ прямой и наплодил бы косых рёбер далеко за пределами участка.
+        public List<Point2d[]> HardTargetSegments = new List<Point2d[]>();
+
         // Мягкие цели выравнивания линий сетки: косяки дверей и оси пилонов-пластин.
         public List<double> JambXs = new List<double>();
         public List<double> JambYs = new List<double>();
@@ -296,6 +304,18 @@ namespace MeshPlugin
             }
             if (input.FixedWallSegments.Count > 0)
                 res.Log.Add($"\nЗакреплённых осей (слой с меткой {FixMarker}): {input.FixedWallSegments.Count} — не двигались; из них прямых, на которые ставится линия сетки: {fixedTargets}\n");
+
+            // Кромки участков другой толщины (приходят из LIRREMESH): граница
+            // участка обязана лечь ровно по рёбрам элементов, иначе элемент
+            // оказывается наполовину в участке и его толщину решает положение центра.
+            int extraTargets = 0;
+            foreach (var w in input.HardTargetSegments)
+            {
+                if (Math.Abs(w[0].X - w[1].X) < MeshTol.NodeMerge) { holeXs.Add(w[0].X); extraTargets++; }
+                else if (Math.Abs(w[0].Y - w[1].Y) < MeshTol.NodeMerge) { holeYs.Add(w[0].Y); extraTargets++; }
+            }
+            if (input.HardTargetSegments.Count > 0)
+                res.Log.Add($"\nКромок участков другой толщины: {input.HardTargetSegments.Count}; из них прямых, на которые ставится линия сетки: {extraTargets}\n");
 
             var xs = BuildGridCoords(minX, maxX, cellSize, colXs, holeXs, out int shiftedX, out int insertedX, out int rejectedX, out int splitX);
             var ys = BuildGridCoords(minY, maxY, cellSize, colYs, holeYs, out int shiftedY, out int insertedY, out int rejectedY, out int splitY);

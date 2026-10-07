@@ -571,12 +571,17 @@ namespace MeshPlugin
         // одного её куска переписывается вся полилиния целиком (см. ApplyMeshSegments).
         private void ReadMeshSegments(
             Transaction tr, Database db,
-            List<ObjectId> ents, List<Point2d[]> segs, List<int> owner)
+            List<ObjectId> ents, List<Point2d[]> segs, List<int> owner,
+            List<ObjectId> skip = null)
         {
             BlockTableRecord btr = (BlockTableRecord)tr.GetObject(db.CurrentSpaceId, OpenMode.ForRead);
 
             foreach (ObjectId id in btr)
             {
+                // Указанный пользователем контур (области, зоны) мог оказаться в том же
+                // слое: читать его как линию сетки нельзя, иначе команда его же и сотрёт.
+                if (skip != null && skip.Contains(id)) continue;
+
                 Entity ent = tr.GetObject(id, OpenMode.ForRead) as Entity;
                 if (ent == null || ent.Layer != TriangulationLayerName) continue;
 
