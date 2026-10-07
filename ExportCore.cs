@@ -200,6 +200,7 @@ namespace MeshPlugin
             // Грань с центром пилона внутри разбивается веером треугольников вокруг
             // центра — центр становится узлом сетки, к нему цепляется стержень пилона.
             int spikeFans = 0, multiSpikeFaces = 0;
+            int quadSplitFaces = 0, quadSplitPieces = 0, fanTriFaces = 0;
             foreach (var rawFace in faces)
             {
                 // Конец стены внутри ячейки — тупиковое ребро графа: обход грани
@@ -266,32 +267,58 @@ namespace MeshPlugin
                 {
                     // Прямоугольная ячейка -> КЭ 41 (прямоугольный элемент оболочки),
                     // прочие четырёхугольники -> КЭ 44. Порядок узлов одинаков ("змейкой").
-                    bool rect = true;
-                    for (int i = 0; i < 4 && rect; i++)
-                    {
-                        Point2d pp = poly[(i + 3) % 4], pc = poly[i], pn = poly[(i + 1) % 4];
-                        double l1 = pc.GetDistanceTo(pp), l2 = pc.GetDistanceTo(pn);
-                        if (l1 < 1e-9 || l2 < 1e-9) { rect = false; break; }
-                        double dot = ((pp.X - pc.X) * (pn.X - pc.X) + (pp.Y - pc.Y) * (pn.Y - pc.Y)) / (l1 * l2);
-                        if (Math.Abs(dot) > 1e-3) rect = false;
-                    }
-                    elements.Add(new int[] { rect ? 41 : 44, 1, SlabNode(face[0]), SlabNode(face[1]), SlabNode(face[3]), SlabNode(face[2]) });
+                    elements.Add(new int[] { IsRectQuad(poly[0], poly[1], poly[2], poly[3]) ? 41 : 44, 1,
+                        SlabNode(face[0]), SlabNode(face[1]), SlabNode(face[3]), SlabNode(face[2]) });
                 }
                 else
                 {
-                    int failed = 0;
-                    foreach (var t in TriangulateSimplePolygon(poly, ref failed))
-                        elements.Add(new int[] { 42, 1, Node3(t[0].X, t[0].Y, 0), Node3(t[1].X, t[1].Y, 0), Node3(t[2].X, t[2].Y, 0) });
-                    failedFaces += failed;
-                    if (failed > 0)
+                    // ГРАНЬ С ВИСЯЧИМИ УЗЛАМИ. Это обычная ячейка, на ребро которой сел
+                    // узел соседа: переход между сетками разной плотности, кромка
+                    // участка другой толщины, край отпечатка пилона. Узел выбросить
+                    // нельзя — в ЛИРЕ связь идёт только через общие узлы.
+                    //
+                    // Раньше такая грань шла в ear-clipping и становилась веером
+                    // треугольников. В чертеже это незаметно (линии те же), а в ЛИРЕ
+                    // вдоль всей границы перехода вылезала полоса тонких КЭ 42 —
+                    // именно на неё пожаловался пользователь 07.10.2026. Теперь грань
+                    // сначала режется на четырёхугольники, и треугольник остаётся
+                    // только там, где без него никак (нечётное число вершин).
+                    var pieces = SplitFaceToQuads(poly);
+                    if (pieces != null)
                     {
-                        Point2d fc = PolygonCentroid(poly);
-                        lostFaceCenters.Add($"({fc.X:0}, {fc.Y:0})");
-                        lostFacePts.Add(fc);
+                        foreach (var pc in pieces)
+                        {
+                            if (pc.Length == 3)
+                                elements.Add(new int[] { 42, 1,
+                                    SlabNode(face[pc[0]]), SlabNode(face[pc[1]]), SlabNode(face[pc[2]]) });
+                            else
+                                elements.Add(new int[] {
+                                    IsRectQuad(poly[pc[0]], poly[pc[1]], poly[pc[2]], poly[pc[3]]) ? 41 : 44, 1,
+                                    SlabNode(face[pc[0]]), SlabNode(face[pc[1]]), SlabNode(face[pc[3]]), SlabNode(face[pc[2]]) });
+                        }
+                        quadSplitFaces++;
+                        quadSplitPieces += pieces.Count;
+                    }
+                    else
+                    {
+                        int failed = 0;
+                        foreach (var t in TriangulateSimplePolygon(poly, ref failed))
+                            elements.Add(new int[] { 42, 1, Node3(t[0].X, t[0].Y, 0), Node3(t[1].X, t[1].Y, 0), Node3(t[2].X, t[2].Y, 0) });
+                        failedFaces += failed;
+                        fanTriFaces++;
+                        if (failed > 0)
+                        {
+                            Point2d fc = PolygonCentroid(poly);
+                            lostFaceCenters.Add($"({fc.X:0}, {fc.Y:0})");
+                            lostFacePts.Add(fc);
+                        }
                     }
                 }
             }
 
+            if (quadSplitFaces + fanTriFaces > 0)
+                res.Log.Add($"\nГраней с висячими узлами (переходы между сетками, кромки участков): {quadSplitFaces + fanTriFaces}; разрезано на четырёхугольники: {quadSplitFaces} (элементов {quadSplitPieces})" +
+                    (fanTriFaces > 0 ? $"; разбито треугольниками: {fanTriFaces}" : "") + "\n");
             if (spikeFans > 0)
                 res.Log.Add($"\nКонцов стен внутри ячеек, врезанных в плиту веером треугольников: {spikeFans}\n");
             if (multiSpikeFaces > 0)
