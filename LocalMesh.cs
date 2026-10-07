@@ -106,6 +106,32 @@ namespace MeshPlugin
                     new List<ObjectId> { per.ObjectId });
                 ed.WriteMessage($"Линий сетки прочитано из {TriangulationLayerName}: {meshSegs.Count} (объектов: {meshEnts.Count})\n");
 
+                // ГРАНИЦА ОБЛАСТИ ПЕРЕСТАВЛЯЕТСЯ НА ЛИНИИ СУЩЕСТВУЮЩЕЙ СЕТКИ, внутрь.
+                //
+                // Нарисованный от руки контур почти всегда режет ячейки где попало:
+                // его грань лежит между линиями сетки, и узлы окружающей сетки рядом
+                // с ней поставить линию уже не дают (BuildGridCoords бережёт просвет),
+                // отчего на границе родятся Т-стыки. Если же граница совпадает с
+                // ЛИНИЕЙ сетки, узлы на ней — обычные узлы сетки, и новая сетка
+                // смыкается со старой без единого Т-узла.
+                //
+                // Поэтому каждая прямая грань контура двигается внутрь до ближайшей
+                // линии сетки, идущей вдоль неё. Ряд элементов между нарисованным
+                // контуром и новой границей остаётся нетронутым — он и служит стыком
+                // (предложение пользователя 07.10.2026: «обведу с запасом в один ряд,
+                // а программа пусть удаляет после первого ряда»).
+                int shrunkEdges;
+                var snapped = ShrinkRegionToMeshLines(region, meshSegs, out shrunkEdges);
+                if (snapped != null && shrunkEdges > 0)
+                {
+                    region = snapped;
+                    ed.WriteMessage($"Граница области переставлена на линии существующей сетки внутрь: граней {shrunkEdges}. Ряд элементов между вашим контуром и новой границей остаётся нетронутым — он и есть стык.\n");
+                }
+                else
+                {
+                    ed.WriteMessage("Границу области переставить на линии сетки не удалось (контур не прямоугольный, линий вдоль граней нет или после сдвига область вырождается) — работаем по нарисованному контуру.\n");
+                }
+
                 // Всё, что внутри области, уходит: куски рёбер внутри отрезаются,
                 // целиком внутренние пропадают. Делать это руками инженеру не нужно —
                 // достаточно обвести область.
@@ -192,6 +218,13 @@ namespace MeshPlugin
 
                 if (clippedHoles + clippedColumns + clippedRects > 0)
                     ed.WriteMessage($"Обрезано границей области: отверстий {clippedHoles}, пилонов {clippedColumns}, отпечатков {clippedRects} — внутри области считается только попавшая в неё часть\n");
+                // Обрезанный отпечаток — единственный случай, где обрезка реально
+                // портит сетку: ядро обязано поставить узел на каждую грань
+                // отпечатка, а срезанная грань лежит на границе области, и рядом с
+                // ней родятся рёбра в десятки миллиметров. Пилон лучше обводить
+                // целиком — об этом и предупреждаем, а не молчим.
+                if (clippedRects > 0)
+                    ed.WriteMessage($"ВНИМАНИЕ: граница области режет отпечаток пилона ({clippedRects} шт.). У такого пилона в области возможны короткие рёбра и узлы контура вне сетки. Лучше обвести область так, чтобы пилон попадал в неё целиком.\n");
 
                 if (cutMarks.Count > 0)
                 {
@@ -364,25 +397,37 @@ namespace MeshPlugin
                         if (IsOnPolygonBoundary(s[e], region, MeshTol.Collinear)) innerBoundary.GetNode(s[e]);
 
                 int tied = 0;
+                var untied = new List<Point2d>();
                 foreach (var a in anchors)
                 {
                     int before = innerBoundary.Nodes.Count;
                     innerBoundary.GetNode(a);
                     if (innerBoundary.Nodes.Count == before) tied++;
+                    else untied.Add(a);
                 }
 
                 ed.WriteMessage($"Стык: узлов окружающей сетки на границе {anchors.Count}, линия новой сетки продолжает {tied}" +
                     (anchors.Count - tied > 0 ? $", остальные {anchors.Count - tied} стали Т-узлами (связь полная: соседний элемент уйдёт в ЛИРУ разрезанным, но линия сквозь границу не идёт)" : " — все") + "\n");
-                if (anchors.Count - tied > 0)
-                    ed.WriteMessage("Т-узлы появляются там, где поставить линию мешает край области: узел ближе половины шага к границе. Если нужен сквозной стык по всем узлам — обведите область ПО ЛИНИЯМ существующей сетки.\n");
-                // КОНТРОЛЬ СВЯЗНОСТИ. Узел, у которого ровно одно ребро, — это
-                // оборванный конец: в ЛИРЕ он ничего не держит. В правильной сетке
-                // таких нет, поэтому каждый идёт кругом в ПРОБЛЕМА с подписью, а не
-                // прячется в числах. Считаем по ПОЛОСЕ (work): за её пределами сетка
-                // не наша, и чужие обрывы на совести прошлых правок.
+                if (untied.Count > 0)
+                {
+                    var where = new List<string>();
+                    for (int i = 0; i < untied.Count && i < 8; i++) where.Add($"({untied[i].X:0}, {untied[i].Y:0})");
+                    ed.WriteMessage($"  Т-узлы: {string.Join(", ", where)}" + (untied.Count > 8 ? $" и ещё {untied.Count - 8}" : "") + "\n");
+                    ed.WriteMessage("  Обычная причина — край области: узел ближе половины шага к границе, линию туда не поставить. Если нужен сквозной стык по всем узлам, обводите область ПО ЛИНИЯМ существующей сетки.\n");
+                }
+                // КОНТРОЛЬ СВЯЗНОСТИ. Узел, у которого ровно одно ребро, — оборванный
+                // конец: в ЛИРЕ он ничего не держит.
+                //
+                // Степень считается по ВСЕЙ сетке (all), а не по рабочей полосе. По
+                // полосе считать нельзя: у каждой линии, пересекающей её край,
+                // продолжение лежит в passive, и такой узел выглядит оборванным.
+                // На реальном плане 07.10.2026 это дало 77 ложных тревог — ровно
+                // столько линий пересекало край полосы.
+                // Сообщаем только о том, что внутри полосы: чужие обрывы за её
+                // пределами — следы прошлых ручных правок, и не наше дело.
                 var degIndex = new NodeIndex();
                 var degree = new List<int>();
-                foreach (var s2 in work)
+                foreach (var s2 in all)
                 {
                     for (int e = 0; e < 2; e++)
                     {
@@ -393,7 +438,12 @@ namespace MeshPlugin
                 }
                 var openPts = new List<Point2d>();
                 for (int i = 0; i < degree.Count; i++)
-                    if (degree[i] == 1) openPts.Add(degIndex.Nodes[i]);
+                {
+                    if (degree[i] != 1) continue;
+                    Point2d p = degIndex.Nodes[i];
+                    if (p.X < mx0 || p.X > mx1 || p.Y < my0 || p.Y > my1) continue;
+                    openPts.Add(p);
+                }
 
                 ed.WriteMessage($"Врезка: рёбер разрезано узлом {splitCount}, узлов в пересечения {crossings}" +
                     (dropped > 0 ? $", совпавших рёбер отброшено {dropped}" : "") + "\n");
@@ -426,6 +476,118 @@ namespace MeshPlugin
             {
                 ed.WriteMessage($"\nОшибка LIRREMESH: {ex.Message}\nИзменения команды отменены.\n");
             }
+        }
+
+        // Переставить каждую прямую грань контура области ВНУТРЬ, на ближайшую
+        // линию существующей сетки, идущую вдоль этой грани.
+        //
+        // Линией считается не отдельный отрезок, а координата, вдоль которой
+        // отрезки покрывают не меньше половины длины грани: сетка нарезана по
+        // ячейкам, и один отрезок длиной в шаг линией не является.
+        //
+        // Работает только для контура из прямых горизонтальных и вертикальных
+        // граней (прямоугольник, Г- и П-образные). У наклонной грани линии вдоль
+        // неё нет — такой контур возвращается как есть (null).
+        private List<Point2d> ShrinkRegionToMeshLines(
+            List<Point2d> region, List<Point2d[]> mesh, out int movedEdges)
+        {
+            movedEdges = 0;
+            int n = region.Count;
+            if (n < 4) return null;
+
+            // Грани: вид, координата, диапазон вдоль грани, направление внутрь.
+            // Контур обойдён против часовой, значит внутренность — слева по ходу:
+            // нормаль внутрь = поворот направления на +90 градусов.
+            var kind = new char[n];
+            var coord = new double[n];
+            var lo = new double[n];
+            var hi = new double[n];
+            var dir = new int[n];
+
+            for (int i = 0; i < n; i++)
+            {
+                Point2d p = region[i], q = region[(i + 1) % n];
+                if (Math.Abs(p.X - q.X) < MeshTol.Collinear)
+                {
+                    kind[i] = 'V'; coord[i] = p.X;
+                    lo[i] = Math.Min(p.Y, q.Y); hi[i] = Math.Max(p.Y, q.Y);
+                    dir[i] = q.Y > p.Y ? -1 : 1;      // вверх -> внутрь по -X
+                }
+                else if (Math.Abs(p.Y - q.Y) < MeshTol.Collinear)
+                {
+                    kind[i] = 'H'; coord[i] = p.Y;
+                    lo[i] = Math.Min(p.X, q.X); hi[i] = Math.Max(p.X, q.X);
+                    dir[i] = q.X > p.X ? 1 : -1;      // вправо -> внутрь по +Y
+                }
+                else return null;                      // наклонная грань
+                if (hi[i] - lo[i] < MeshTol.MinElementSize) return null;  // грань-огрызок
+            }
+
+            // Отрезки сетки по видам — один проход на весь план.
+            var vx = new List<double[]>();   // {x, y0, y1}
+            var hy = new List<double[]>();   // {y, x0, x1}
+            foreach (var sg in mesh)
+            {
+                if (Math.Abs(sg[0].X - sg[1].X) < MeshTol.Collinear)
+                    vx.Add(new double[] { sg[0].X, Math.Min(sg[0].Y, sg[1].Y), Math.Max(sg[0].Y, sg[1].Y) });
+                else if (Math.Abs(sg[0].Y - sg[1].Y) < MeshTol.Collinear)
+                    hy.Add(new double[] { sg[0].Y, Math.Min(sg[0].X, sg[1].X), Math.Max(sg[0].X, sg[1].X) });
+            }
+
+            var newCoord = new double[n];
+            for (int i = 0; i < n; i++)
+            {
+                newCoord[i] = coord[i];
+                var src = kind[i] == 'V' ? vx : hy;
+
+                // Покрытие грани по каждой координате: ключ — десятые доли мм.
+                var cover = new Dictionary<long, double>();
+                foreach (var L in src)
+                {
+                    double ov = Math.Min(hi[i], L[2]) - Math.Max(lo[i], L[1]);
+                    if (ov <= 0) continue;
+                    long key = (long)Math.Round(L[0] * 10.0);
+                    double had;
+                    cover[key] = (cover.TryGetValue(key, out had) ? had : 0.0) + ov;
+                }
+
+                double need = 0.5 * (hi[i] - lo[i]);
+                double bestDelta = double.MaxValue;
+                foreach (var kv in cover)
+                {
+                    if (kv.Value < need) continue;
+                    double c = kv.Key / 10.0;
+                    double delta = (c - coord[i]) * dir[i];
+                    if (delta < MeshTol.MinPiece) continue;        // не внутрь
+                    if (delta < bestDelta) { bestDelta = delta; newCoord[i] = c; }
+                }
+                if (bestDelta < double.MaxValue) movedEdges++;
+            }
+
+            if (movedEdges == 0) return null;
+
+            // Вершина i — пересечение грани i-1 и грани i. У прямоугольного контура
+            // они всегда перпендикулярны, поэтому одна даёт X, другая Y.
+            var res = new List<Point2d>(n);
+            for (int i = 0; i < n; i++)
+            {
+                int pr = (i - 1 + n) % n;
+                if (kind[i] == kind[pr]) return null;   // две одинаковые грани подряд
+                res.Add(kind[i] == 'V'
+                    ? new Point2d(newCoord[i], newCoord[pr])
+                    : new Point2d(newCoord[pr], newCoord[i]));
+            }
+
+            // Проверки: область не должна вывернуться, схлопнуться или вылезти за
+            // нарисованный контур. Не прошло — работаем по нарисованному.
+            var clean = CleanupPolygon(res);
+            if (clean.Count < 4) return null;
+            EnsureCcw(clean);
+            if (Math.Abs(PolygonArea(clean)) < 4.0 * MeshTol.MinElementSize * MeshTol.MinElementSize) return null;
+            if (FindSelfIntersections(clean).Count > 0) return null;
+            if (!IsPolygonInsideContour(clean, region)) return null;
+
+            return clean;
         }
 
         // Контуры пустот (отверстия, пилоны, отпечатки), попавшие в область.
