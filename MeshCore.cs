@@ -42,6 +42,13 @@ namespace MeshPlugin
         // БЕСКОНЕЧНОЙ прямой и наплодил бы косых рёбер далеко за пределами участка.
         public List<Point2d[]> HardTargetSegments = new List<Point2d[]>();
 
+        // Жёсткие цели, заданные координатой, а не отрезком: узлы окружающей сетки
+        // на границе перестраиваемой области (LIRREMESH). На каждой такой координате
+        // линия сетки обязана стоять — иначе новая сетка не продолжает старую, и на
+        // всей границе вместо общих узлов получаются Т-стыки.
+        public List<double> HardXs = new List<double>();
+        public List<double> HardYs = new List<double>();
+
         // Мягкие цели выравнивания линий сетки: косяки дверей и оси пилонов-пластин.
         public List<double> JambXs = new List<double>();
         public List<double> JambYs = new List<double>();
@@ -316,6 +323,15 @@ namespace MeshPlugin
             }
             if (input.HardTargetSegments.Count > 0)
                 res.Log.Add($"\nКромок участков другой толщины: {input.HardTargetSegments.Count}; из них прямых, на которые ставится линия сетки: {extraTargets}\n");
+
+            // Узлы окружающей сетки на границе области: линия обязана встать ровно
+            // на каждый, тогда новая сетка продолжает старую и узлы общие. Мягкой
+            // целью тут не обойтись — она двигает линию, только если та ближе 100 мм,
+            // а при несовпадении шагов это как раз не так.
+            holeXs.AddRange(input.HardXs);
+            holeYs.AddRange(input.HardYs);
+            if (input.HardXs.Count + input.HardYs.Count > 0)
+                res.Log.Add($"\nУзлов окружающей сетки, на которые линия сетки обязана встать: {input.HardXs.Count + input.HardYs.Count}\n");
 
             var xs = BuildGridCoords(minX, maxX, cellSize, colXs, holeXs, out int shiftedX, out int insertedX, out int rejectedX, out int splitX);
             var ys = BuildGridCoords(minY, maxY, cellSize, colYs, holeYs, out int shiftedY, out int insertedY, out int rejectedY, out int splitY);
