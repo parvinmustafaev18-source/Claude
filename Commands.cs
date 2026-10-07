@@ -61,7 +61,7 @@ namespace MeshPlugin
             new HelpLine("По желанию:"),
             new HelpLine("     ", "LIRDOORS", "дверные проёмы; чертить ДО LIRBUILD"),
             new HelpLine("     ", "LIRFIX", "закрепить оси: построение их не двигает"),
-            new HelpLine("     ", "LIRTHICK", "зона утолщения плиты: контур + подтяжка готовой сетки"),
+            new HelpLine("     ", "LIRTHICK", "плита другой толщины на участке: контур + подтяжка сетки"),
             new HelpLine("     ", "LIRCHECK", "проверить план перед построением; чертёж не меняется"),
             new HelpLine("     ", "LIRVERSION", "версия плагина и время сборки"),
             new HelpLine("     ", "LIRHELP", "этот список: в консоль и в чертёж, слой " + HelpLayerName),
