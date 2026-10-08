@@ -62,6 +62,7 @@ namespace MeshPlugin
             new HelpLine("     ", "LIRDOORS", "дверные проёмы; чертить ДО LIRBUILD"),
             new HelpLine("     ", "LIRFIX", "закрепить оси: построение их не двигает"),
             new HelpLine("     ", "LIRSPLIT", "разбить пересечения на выбранном участке готовой сетки"),
+            new HelpLine("     ", "LIRSHORT", "выделить отрезки не длиннее заданного в выбранной области"),
             new HelpLine("     ", "LIRCHECK", "проверить план перед построением; чертёж не меняется"),
             new HelpLine("     ", "LIRVERSION", "версия плагина и время сборки"),
             new HelpLine("     ", "LIRHELP", "этот список: в консоль и в чертёж, слой " + HelpLayerName),

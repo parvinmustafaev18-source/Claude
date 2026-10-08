@@ -107,6 +107,7 @@
     <Compile Include="QuadMesh.cs" />
     <Compile Include="SelfCheck.cs" />
     <Compile Include="SelfTest.cs" />
+    <Compile Include="ShortLines.cs" />
     <Compile Include="SpatialGrid.cs" />
     <Compile Include="Properties\AssemblyInfo.cs" />
   </ItemGroup>

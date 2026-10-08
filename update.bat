@@ -108,7 +108,7 @@ if errorlevel 2 (
     echo Visual Studio здесь нет - проверяю готовую сборку из dist\.
     echo.
     if exist "dist\needs-build.txt" (
-        echo [СТОП] Новая команда LIRSPLIT ещё не собрана в DLL.
+        echo [СТОП] Новая версия плагина ещё не собрана в DLL.
         echo Запустите update.bat на компьютере с AutoCAD и Visual Studio / Build Tools.
         echo После сборки новая DLL появится в этой ветке; повторите обновление здесь.
         goto :fail
