@@ -201,6 +201,9 @@ namespace MeshPlugin
         private const string GapMarkLayerName = "MESH_GAP_MARKS";
         private const double GapMarkRadius = 150.0; // Ø300 мм
 
+        // Проблемная сторона контура LIRZONE; не входит в сетку и экспорт.
+        private const string SlabZoneMarkLayerName = "MESH_ZONE_MARKS";
+
         // Слой проблемных мест: места, из-за которых сетка не построилась или
         // построилась с дырами. Общий для LIRBUILD и LIREXPORT — показывает
         // проблемы последнего запуска.
