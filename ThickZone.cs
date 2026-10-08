@@ -16,8 +16,8 @@ namespace MeshPlugin
     // В ЛИРУ это уходит как ОТДЕЛЬНАЯ жёсткость пластин — геометрия схемы не
     // меняется, меняется только номер жёсткости у элементов внутри зоны.
     //
-    // Контур и сетку задаёт инженер. LIRTHICK назначает только слой с толщиной;
-    // экспорт выбирает жёсткость по центру готового элемента плиты.
+    // Контур задаёт инженер. LIRTHICK назначает толщину и врезает границу в
+    // готовую сетку без сдвига узлов. Экспорт выбирает жёсткость по центру элемента.
     internal class ThickZone
     {
         public List<Point2d> Poly = new List<Point2d>();   // контур зоны (против часовой)
@@ -70,8 +70,151 @@ namespace MeshPlugin
             return result;
         }
 
-        // Регистрация участков без изменения готовой сетки.
-        // Границы элементов инженер совмещает с контурами вручную.
+        // Разрез только по новым границам: существующие линии не сдвигаются,
+        // а их пересечения друг с другом вне новых контуров не меняются.
+        // В отличие от общего Х-разреза учитываются касания, наложения и точки
+        // ближе 0.5 мм к концам: здесь они тоже разделяют разные толщины плиты.
+        internal List<Point2d[]> SplitMeshAtThickBoundaries(
+            List<Point2d[]> mesh, List<Point2d[]> boundary,
+            out int splitEdges, out int addedEdges)
+        {
+            splitEdges = 0;
+            addedEdges = 0;
+            var all = new List<Point2d[]>(mesh);
+            all.AddRange(boundary);
+            var cuts = new List<KeyValuePair<double, Point2d>>[all.Count];
+            var boxes = new BboxIndex(500.0);
+            for (int i = 0; i < all.Count; i++) boxes.AddSegment(i, all[i][0], all[i][1]);
+
+            void AddCut(int i, Point2d p)
+            {
+                Point2d a = all[i][0], b = all[i][1];
+                double dx = b.X - a.X, dy = b.Y - a.Y;
+                double lenSq = dx * dx + dy * dy;
+                if (lenSq < MeshTol.ZeroSq || !IsPointOnSegment(p, a, b, MeshTol.OnSegment)) return;
+                if (p.GetDistanceTo(a) <= MeshTol.NodeMerge || p.GetDistanceTo(b) <= MeshTol.NodeMerge) return;
+                double t = ((p.X - a.X) * dx + (p.Y - a.Y) * dy) / lenSq;
+                if (t <= 0.0 || t >= 1.0) return;
+                if (cuts[i] == null) cuts[i] = new List<KeyValuePair<double, Point2d>>();
+                cuts[i].Add(new KeyValuePair<double, Point2d>(t, p));
+            }
+
+            for (int i = mesh.Count; i < all.Count; i++)
+            {
+                Point2d a = all[i][0], b = all[i][1];
+                double dx = b.X - a.X, dy = b.Y - a.Y;
+                double len = a.GetDistanceTo(b);
+                if (len <= MeshTol.NodeMerge) continue;
+                var nearby = boxes.Query(Math.Min(a.X, b.X) - MeshTol.OnSegment,
+                    Math.Min(a.Y, b.Y) - MeshTol.OnSegment,
+                    Math.Max(a.X, b.X) + MeshTol.OnSegment,
+                    Math.Max(a.Y, b.Y) + MeshTol.OnSegment);
+                foreach (int j in nearby)
+                {
+                    if (j >= i) continue;
+                    Point2d c = all[j][0], d = all[j][1];
+                    double ex = d.X - c.X, ey = d.Y - c.Y;
+                    double otherLen = c.GetDistanceTo(d);
+                    if (otherLen <= MeshTol.NodeMerge) continue;
+                    double denom = dx * ey - dy * ex;
+                    if (Math.Abs(denom) > MeshTol.ZeroSq)
+                    {
+                        double t = ((c.X - a.X) * ey - (c.Y - a.Y) * ex) / denom;
+                        double u = ((c.X - a.X) * dy - (c.Y - a.Y) * dx) / denom;
+                        if (t >= 0.0 && t <= 1.0 && u >= 0.0 && u <= 1.0)
+                        {
+                            var ip = new Point2d(a.X + dx * t, a.Y + dy * t);
+                            AddCut(i, ip);
+                            AddCut(j, ip);
+                        }
+                    }
+                    // Конец одного ребра внутри другого: Т-стык или наложение.
+                    AddCut(i, c); AddCut(i, d);
+                    AddCut(j, a); AddCut(j, b);
+                }
+            }
+
+            var result = new List<Point2d[]>();
+            var ni = new NodeIndex();
+            var emitted = new HashSet<long>();
+            void AddPiece(int i, Point2d a, Point2d b)
+            {
+                if (a.GetDistanceTo(b) <= MeshTol.NodeMerge) return;
+                long key = EdgePairKey(ni.GetNode(a), ni.GetNode(b));
+                bool fresh = emitted.Add(key);
+                // Старые дубликаты не удаляем: команда не чистит чужую сетку.
+                if (i < mesh.Count || fresh)
+                {
+                    result.Add(new Point2d[] { a, b });
+                }
+            }
+            int boundaryPieces = 0;
+            for (int i = 0; i < all.Count; i++)
+            {
+                Point2d prev = all[i][0];
+                int before = result.Count;
+                if (cuts[i] != null)
+                {
+                    cuts[i].Sort((p, q) => p.Key.CompareTo(q.Key));
+                    foreach (var cut in cuts[i])
+                    {
+                        if (prev.GetDistanceTo(cut.Value) <= MeshTol.NodeMerge) continue;
+                        AddPiece(i, prev, cut.Value);
+                        prev = cut.Value;
+                    }
+                }
+                AddPiece(i, prev, all[i][1]);
+                if (i < mesh.Count && result.Count - before > 1) splitEdges++;
+                if (i >= mesh.Count) boundaryPieces += result.Count - before;
+            }
+            addedEdges = boundaryPieces;
+            return result;
+        }
+
+        // Замкнутый контур целиком внутри одной ячейки создаёт отдельный остров,
+        // а не разрез ячейки. Не записываем такой граф: экспорт дал бы наложение.
+        internal bool HasIsolatedThickBoundary(
+            List<Point2d[]> split, int addedEdges, List<List<Point2d>> outlines)
+        {
+            int meshCount = split.Count - addedEdges;
+            var ni = new NodeIndex();
+            var meshNodes = new HashSet<int>();
+            for (int i = 0; i < meshCount; i++)
+            {
+                meshNodes.Add(ni.GetNode(split[i][0]));
+                meshNodes.Add(ni.GetNode(split[i][1]));
+            }
+            var graph = new Dictionary<int, List<int>>();
+            for (int i = meshCount; i < split.Count; i++)
+            {
+                int a = ni.GetNode(split[i][0]), b = ni.GetNode(split[i][1]);
+                if (!graph.ContainsKey(a)) graph[a] = new List<int>();
+                if (!graph.ContainsKey(b)) graph[b] = new List<int>();
+                graph[a].Add(b); graph[b].Add(a);
+            }
+            var visited = new HashSet<int>();
+            foreach (int start in graph.Keys)
+            {
+                if (!visited.Add(start)) continue;
+                var todo = new Stack<int>();
+                todo.Push(start);
+                int contacts = 0;
+                while (todo.Count > 0)
+                {
+                    int node = todo.Pop();
+                    bool supported = meshNodes.Contains(node);
+                    foreach (var poly in outlines)
+                        if (IsOnPolygonBoundary(ni.Nodes[node], poly, MeshTol.OnSegment)) supported = true;
+                    if (supported) contacts++;
+                    foreach (int next in graph[node])
+                        if (visited.Add(next)) todo.Push(next);
+                }
+                if (contacts < 2) return true;
+            }
+            return false;
+        }
+
+        // Контуры получают толщину; их границы разрезают готовую сетку.
         [CommandMethod("LIRTHICK")]
         public void ThickZoneCommand()
         {
@@ -98,6 +241,8 @@ namespace MeshPlugin
             if (pdrT.Status != PromptStatus.OK) return;
             double thickness = pdrT.Value;
 
+            SaveDrawingBeforeWork(doc, ed);
+
             try
             {
             using (Transaction tr = db.TransactionManager.StartTransaction())
@@ -109,6 +254,7 @@ namespace MeshPlugin
 
                 int taken = 0, skippedOpen = 0, skippedArcs = 0, skippedService = 0;
                 int skippedInvalid = 0, skippedOutside = 0;
+                var selectedZones = new List<ThickZone>();
                 foreach (SelectedObject so in psr.Value)
                 {
                     Polyline pl = tr.GetObject(so.ObjectId, OpenMode.ForWrite) as Polyline;
@@ -133,6 +279,7 @@ namespace MeshPlugin
                     { skippedOutside++; continue; }
 
                     pl.Layer = zoneLayer;
+                    selectedZones.Add(new ThickZone { Poly = verts, ThicknessMm = thickness });
                     taken++;
                 }
 
@@ -153,8 +300,42 @@ namespace MeshPlugin
                 if (contour == null)
                     ed.WriteMessage("\nВНИМАНИЕ: контур плиты не найден — проверьте, что участки целиком лежат внутри плиты.\n");
 
-                ed.WriteMessage("\nГотово. Контуры получили толщину; сетка не изменена. Совместите границы участков с рёбрами сетки вручную.\n");
-                ed.WriteMessage("LIREXPORT назначит элементам плиты жёсткость по толщине участка, в который попал центр элемента. Пилоны сохранят свои жёсткости.\n");
+                var meshEnts = new List<ObjectId>();
+                var meshSegs = new List<Point2d[]>();
+                var meshOwner = new List<int>();
+                ReadMeshSegments(tr, db, meshEnts, meshSegs, meshOwner);
+                if (meshSegs.Count == 0)
+                {
+                    ed.WriteMessage("\nКонтуры получили толщину, но линий сетки нет. После LIRBUILD повторите LIRTHICK на этих контурах для разрезания сетки.\n");
+                    tr.Commit();
+                    return;
+                }
+
+                var boundary = new List<Point2d[]>();
+                foreach (var zone in selectedZones)
+                    for (int i = 0; i < zone.Poly.Count; i++)
+                        boundary.Add(new Point2d[] { zone.Poly[i], zone.Poly[(i + 1) % zone.Poly.Count] });
+                // В пустоты новые линии не добавляем. Отпечаток пилона-пластины
+                // пустотой не является: его сетка режется, жёсткость сохраняется.
+                var voids = GetHolePolygons(tr, db);
+                voids.AddRange(GetColumnPolygons(tr, db));
+                boundary = ClipSegmentsOutsideColumns(boundary, voids, out _, out _);
+
+                int splitEdges, boundaryEdges;
+                var split = SplitMeshAtThickBoundaries(meshSegs, boundary, out splitEdges, out boundaryEdges);
+                var outlines = new List<List<Point2d>>(voids);
+                if (contour != null) outlines.Add(contour);
+                if (HasIsolatedThickBoundary(split, boundaryEdges, outlines))
+                {
+                    ed.WriteMessage("\nКонтуры получили толщину, но граница образует остров внутри ячейки или касается сетки только в одной точке. Сетка не изменена. Добавьте линии сетки через этот участок вручную и повторите LIRTHICK.\n");
+                    tr.Commit();
+                    return;
+                }
+                int erased, added, kept;
+                ApplyMeshSegments(tr, db, meshEnts, meshSegs, meshOwner, split, out erased, out added, out kept);
+                ed.WriteMessage($"\nРазрезано существующих рёбер: {splitEdges}; добавлено рёбер по границам утолщения: {boundaryEdges}. Узлы не перемещались.\n");
+                ed.WriteMessage($"Чертёж: сохранено отрезков {kept}, добавлено {added}, удалено исходных объектов {erased}.\n");
+                ed.WriteMessage("LIREXPORT назначит частям плиты внутри участка отдельную жёсткость с заданной толщиной. Пилоны сохранят свои жёсткости.\n");
 
                 tr.Commit();
             }
