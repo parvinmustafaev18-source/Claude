@@ -101,6 +101,8 @@
     <Compile Include="ExportCore.cs" />
     <Compile Include="ExportSelfCheck.cs" />
     <Compile Include="LiraExport.cs" />
+    <Compile Include="LocalSplit.cs" />
+    <Compile Include="LocalSplitCore.cs" />
     <Compile Include="MeshCore.cs" />
     <Compile Include="QuadMesh.cs" />
     <Compile Include="SelfCheck.cs" />
@@ -127,6 +129,7 @@
 xcopy /Y "$(ProjectDir)bundle\PackageContents.xml" "$(BundleDir)\"
 xcopy /Y "$(TargetPath)" "$(BundleDir)\Contents\" || (echo. &amp;&amp; echo ERROR: cannot copy MeshPlugin.dll into the AutoCAD bundle - the file is locked. Close AutoCAD and rebuild, otherwise AutoCAD will keep running the OLD build. &amp;&amp; exit 1)
 if not exist "$(ProjectDir)dist\" mkdir "$(ProjectDir)dist"
-xcopy /Y "$(TargetPath)" "$(ProjectDir)dist\"</PostBuildEvent>
+xcopy /Y "$(TargetPath)" "$(ProjectDir)dist\" || exit /b 1
+if exist "$(ProjectDir)dist\needs-build.txt" del "$(ProjectDir)dist\needs-build.txt"</PostBuildEvent>
   </PropertyGroup>
 </Project>

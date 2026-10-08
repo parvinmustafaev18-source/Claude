@@ -105,8 +105,14 @@ rem --- 4. Собрать; без Visual Studio (код 2) поставить готовую сборку ---
 call build.bat /nopause
 if errorlevel 2 (
     echo.
-    echo Visual Studio здесь нет - ставлю готовую сборку из dist\.
+    echo Visual Studio здесь нет - проверяю готовую сборку из dist\.
     echo.
+    if exist "dist\needs-build.txt" (
+        echo [СТОП] Новая команда LIRSPLIT ещё не собрана в DLL.
+        echo Запустите update.bat на компьютере с AutoCAD и Visual Studio / Build Tools.
+        echo После сборки новая DLL появится в этой ветке; повторите обновление здесь.
+        goto :fail
+    )
     call install.bat /nopause
     if errorlevel 1 goto :fail
     goto :done
