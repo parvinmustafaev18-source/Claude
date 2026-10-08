@@ -1,3 +1,0 @@
-The source contains LIRSHORT; the committed DLL has not been rebuilt yet.
-Run update.bat on a computer with AutoCAD and Visual Studio / Build Tools.
-A successful build removes this marker and publishes the new DLL to stable/without-lirthick.
