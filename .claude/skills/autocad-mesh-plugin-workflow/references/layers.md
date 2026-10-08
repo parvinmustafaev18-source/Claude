@@ -43,9 +43,12 @@ Commands.cs:972–982 (маркерные слои и радиусы).
   дверной и должен защищаться, а высота получает значение по умолчанию.
 - `IsColumnLayer` — `StartsWith("COLUMNS")`, старый общий слой `COLUMNS` тоже
   считается пилоном. `IsSlabLayer`, `IsMarkLayer` — по своим префиксам.
+- `IsSlabZoneLayer` — `MESH_ZONES(H-t)`, замкнутые контуры толщины плиты.
+  LIRZONE записывает толщину в имя слоя; LIREXPORT читает её для полного
+  попадания элементов, без добавления контуров в граф. LIRLAYERS сохраняет слой.
 - `IsServiceLayer` — созданное самим плагином: плита, стены, двери,
   `WALL_DOORS_MARKS`, `LINE_TRIANGULATION`, `MESH_HOLES`, `MESH_PYLONS`,
-  `COLUMNS*`.
+  `COLUMNS*`, `MESH_ZONES(H-t)`.
   Используется в LIRWALLAXIS (что не принимать за
   контур стены), `MovePolylinesToHoleLayer` (что не превращать в отверстие).
 - `KeepLayer` внутри LIRLAYERS — **шире** `IsServiceLayer`: плюс `IsMarkLayer`

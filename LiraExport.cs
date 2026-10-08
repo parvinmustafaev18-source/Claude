@@ -345,6 +345,7 @@ namespace MeshPlugin
                     Segments = segments,
                     HolePolys = holePolys,
                     PylonRects = pylonRects,
+                    SlabZones = ReadSlabZones(tr, db),
                     WallOrig = wallOrig,
                     WallThickness = wallOrigThickness,
                     WallIsPylon = wallOrigIsPylon,

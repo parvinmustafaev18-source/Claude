@@ -1,0 +1,2 @@
+Исходники содержат LIRZONE; dist/MeshPlugin.dll требует новой сборки.
+Закройте AutoCAD и запустите update.bat или build.bat на компьютере с MSBuild.

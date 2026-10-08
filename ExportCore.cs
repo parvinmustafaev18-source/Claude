@@ -25,6 +25,7 @@ namespace MeshPlugin
         public List<Point2d[]> Segments = new List<Point2d[]>();
         public List<List<Point2d>> HolePolys = new List<List<Point2d>>();
         public List<List<Point2d>> PylonRects = new List<List<Point2d>>();
+        public List<SlabThicknessZone> SlabZones = new List<SlabThicknessZone>();
 
         // Стены: исходные отрезки и их свойства (индексы совпадают).
         public List<Point2d[]> WallOrig = new List<Point2d[]>();
@@ -74,6 +75,7 @@ namespace MeshPlugin
         public int RectCount, QuadCount, TriCount;
         public int WallElemCount, BarCount, FanFaces, SpikeFans, MultiSpikeFaces;
         public int HoleElemsRemoved, PylonBodyElems, PylonBodyStiffId;
+        public int ZoneElems;
         public int DoorJambSplits, DoorPiers, DoorRowsSkipped, FailedFaces;
         public List<Point2d> LostFacePts = new List<Point2d>();
         public List<string> LostFaceCenters = new List<string>();
@@ -108,6 +110,22 @@ namespace MeshPlugin
             double wallStep = input.WallStep;
             double pylonStiffFactor = input.PylonStiffFactor;
             string taskName = input.TaskName;
+
+            // Зоны не добавляются в граф: контур обязан лежать на готовых рёбрах.
+            if (input.SlabZones.Count > 0)
+            {
+                var boundaryIndex = SlabZoneCore.IndexSegments(input.Segments);
+                foreach (var zone in input.SlabZones)
+                {
+                    if (!SlabZoneCore.Finite(zone.ThicknessMm) || zone.ThicknessMm <= 0
+                        || !SlabZoneCore.ValidatePolygon(zone.Polygon, out _))
+                    { res.Error = $"\nНекорректная зона {zone.Name}. Повторите LIRZONE.\n"; return res; }
+                    if (!SlabZoneCore.ContainsPolygon(zone.Polygon, contourPts))
+                    { res.Error = $"\nЗона {zone.Name} выходит за выбранный контур плиты.\n"; return res; }
+                    if (!SlabZoneCore.BoundaryCovered(zone.Polygon, input.Segments, boundaryIndex, out int side))
+                    { res.Error = $"\nЗона {zone.Name}: сторона {side + 1} не проходит по рёбрам сетки. Исправьте контур зоны перед экспортом.\n"; return res; }
+                }
+            }
             int columnsWithoutDims = input.ColumnsWithoutDims;
 
             segments = DeduplicateSegments(segments);
@@ -483,6 +501,40 @@ namespace MeshPlugin
                 barCount++;
             }
 
+            // Назначаем зоны после стен/стержней, чтобы сохранить их номера жёсткости.
+            // Полное попадание включает границу, но исключает любой выход ребра наружу.
+            int zoneElems = 0;
+            if (input.SlabZones.Count > 0)
+            {
+                var zoneIndex = new BboxIndex(MeshTol.MinElementSize);
+                for (int i = 0; i < input.SlabZones.Count; i++) zoneIndex.AddPolygon(i, input.SlabZones[i].Polygon);
+                var zoneStiffIds = new Dictionary<double, int>();
+                for (int i = 0; i < slabElemCount; i++)
+                {
+                    var el = elements[i];
+                    if (el[1] != 1) continue;
+                    var polygon = new List<Point2d>();
+                    for (int k = 2; k < el.Length; k++)
+                        polygon.Add(new Point2d(nodes3[el[k]][0], nodes3[el[k]][1]));
+                    double zoneThickness;
+                    try { zoneThickness = SlabZoneCore.FindThickness(polygon, input.SlabZones, zoneIndex); }
+                    catch (InvalidOperationException ex)
+                    { res.Error = "\n" + ex.Message + "\nЭкспорт отменён.\n"; return res; }
+                    if (zoneThickness <= 0) continue;
+                    int stiffId = 1;
+                    if (Math.Abs(zoneThickness - thicknessMm) > MeshTol.Zero
+                        && !zoneStiffIds.TryGetValue(zoneThickness, out stiffId))
+                    {
+                        zoneStiffIds[zoneThickness] = stiffId = nextStiff++;
+                        wallStiffThk[stiffId] = zoneThickness;
+                        wallStiffTitle[stiffId] = $"зона плиты H-{zoneThickness:g} мм (полное попадание)";
+                    }
+                    el[1] = stiffId;
+                    zoneElems++;
+                }
+                res.Log.Add($"\nЗоны толщины: контуров {input.SlabZones.Count}; элементов плиты целиком внутри {zoneElems}. Тела пилонов сохранены.\n");
+            }
+
             // Запись файла (кодировка 1251, числа с точкой, координаты мм -> м).
             // Имя задачи в документе 0 обязано совпадать с именем файла — иначе
             // ЛИРА пишет предупреждение и переименовывает задачу.
@@ -521,7 +573,7 @@ namespace MeshPlugin
                 double eSid;
                 if (!wallStiffE.TryGetValue(sid, out eSid)) eSid = elasticModulus;
                 sb.AppendLine(sid + " GEI " + eSid.ToString("0.###e+000", inv) + " 0.2 "
-                    + (wallStiffThk[sid] / 1000.0).ToString("0.###", inv) + " " + roStr + " /");
+                    + (wallStiffThk[sid] / 1000.0).ToString("0.######", inv) + " " + roStr + " /");
             }
             foreach (var cd in colStiffDims)
             {
@@ -574,6 +626,7 @@ namespace MeshPlugin
                 (columnsWithoutDims > 0 ? $"; пилонов без размеров в имени слоя (принято 400x400): {columnsWithoutDims}" : "") + "\n");
             // Главная проверка результата: покрывают ли пластины плиту целиком.
             res.Log.AddRange(AreaBalanceLines(slabArea, targetArea, holesArea, slabElemCount));
+            res.ZoneElems = zoneElems;
 
             // Раскладка номеров — чтобы сверить с тем, что показала ЛИРА.
             res.Log.Add($"Жёсткости: 1 = плита H-{thicknessMm:0.#}\n");

@@ -63,6 +63,7 @@ namespace MeshPlugin
             new HelpLine("     ", "LIRFIX", "закрепить оси: построение их не двигает"),
             new HelpLine("     ", "LIRSPLIT", "разбить пересечения на выбранном участке готовой сетки"),
             new HelpLine("     ", "LIRSHORT", "выделить отрезки не длиннее заданного в выбранной области"),
+            new HelpLine("     ", "LIRZONE", "зоны толщины плиты по контурам: при экспорте только целиком внутри"),
             new HelpLine("     ", "LIRCHECK", "проверить план перед построением; чертёж не меняется"),
             new HelpLine("     ", "LIRVERSION", "версия плагина и время сборки"),
             new HelpLine("     ", "LIRHELP", "этот список: в консоль и в чертёж, слой " + HelpLayerName),
@@ -347,7 +348,7 @@ namespace MeshPlugin
                 bool KeepLayer(string layer) =>
                     IsWallLayer(layer) || IsColumnLayer(layer)
                     || IsDoorLayer(layer) || layer == DoorMarkLayerName
-                    || layer == HoleLayerName || IsMarkLayer(layer);
+                    || layer == HoleLayerName || IsMarkLayer(layer) || IsSlabZoneLayer(layer);
 
                 foreach (SelectedObject so in psr.Value)
                 {

@@ -160,6 +160,16 @@ namespace MeshPlugin
         // Линии готовой сетки.
         private const string TriangulationLayerName = "LINE_TRIANGULATION";
 
+        // Контуры зон толщины: только разметка жёсткостей при экспорте.
+        private const string SlabZoneLayerPrefix = "MESH_ZONES(H-";
+        private static bool IsSlabZoneLayer(string layer)
+        {
+            return !string.IsNullOrEmpty(layer) && layer.StartsWith("MESH_ZONES(", StringComparison.OrdinalIgnoreCase);
+        }
+        private static readonly System.Text.RegularExpressions.Regex SlabZoneThicknessRegex =
+            new System.Text.RegularExpressions.Regex(@"^MESH_ZONES\(H-([\d.,]+)\)$",
+                System.Text.RegularExpressions.RegexOptions.Compiled | System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+
         // Метка XData на отрезках, нарисованных LIRBUILD. Нужна, чтобы повторный
         // запуск стирал ТОЛЬКО свою прошлую сетку: в LINE_TRIANGULATION лежит и
         // чужое — линии, разложенные LIRLAYERS, и контуры пилонов из
@@ -296,6 +306,7 @@ namespace MeshPlugin
                 || layer == TriangulationLayerName
                 || layer == HoleLayerName
                 || layer == PylonOutlineLayerName
+                || IsSlabZoneLayer(layer)
                 || layer == HelpLayerName
                 || IsColumnLayer(layer);
         }
