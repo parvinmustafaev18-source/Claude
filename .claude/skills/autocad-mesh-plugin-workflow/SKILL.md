@@ -36,7 +36,7 @@ description: AutoCAD .NET-плагин MeshPlugin (partial class Commands), ст
 `LIRPYLON` (пилоны) → при нужде `LIRWALLJOIN` → `LIRCHECK`
 (проверка входа) → `LIRBUILD` → при нужде `LIRREMESH` (перебить сетку в
 области) и `LIRTHICK` (участки другой толщины
-плиты: правят ГОТОВУЮ сетку, не строят заново) → `LIREXPORT`
+плиты: назначает контуры и толщину; сетку инженер правит вручную) → `LIREXPORT`
 (skill `lira-sapr-mesh-export`).
 
 Расчёт сетки и расчёт экспорта живут отдельно от чертежа: `MeshCore.cs`
