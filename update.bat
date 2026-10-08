@@ -2,12 +2,23 @@
 rem ВНИМАНИЕ: файл сохранён в кодировке CP866 с переводами строк CRLF.
 rem В UTF-8 пересохранять нельзя - cmd.exe разобьёт кириллицу и файл сломается.
 rem
-rem Одна кнопка на весь цикл: забрать свежий код с GitHub (в том числе ветку,
-rem в которую пишет Claude), собрать плагин и отправить собранную DLL обратно.
+rem Обновлять только stable/without-lirthick, собрать плагин и отправить DLL
+rem обратно в эту же ветку. main и ветки Claude не подмешиваются.
 rem Где нет Visual Studio - ставит готовую сборку из dist\.
 chcp 866 >nul
 setlocal EnableExtensions EnableDelayedExpansion
-cd /d "%~dp0"
+rem Выполнять временную копию: git merge может заменить сам update.bat.
+if /I "%~1"=="/run" goto :run
+set "RUNNER=%TEMP%\MeshPlugin-update-%RANDOM%-%RANDOM%.bat"
+copy /Y "%~f0" "!RUNNER!" >nul
+if errorlevel 1 goto :fail
+"!RUNNER!" /run "%~dp0"
+exit /b 1
+
+:run
+cd /d "%~2"
+if errorlevel 1 goto :fail
+set "TARGET=stable/without-lirthick"
 
 echo.
 echo ==========================================
@@ -22,13 +33,25 @@ if errorlevel 1 (
     goto :fail
 )
 
+rem Не запускать обновление или отправку сборки из main и архивных веток.
+set "CUR="
+for /f "tokens=*" %%B in ('git rev-parse --abbrev-ref HEAD') do set "CUR=%%B"
+if not "!CUR!"=="!TARGET!" (
+    echo [СТОП] Требуется ветка !TARGET!, сейчас !CUR!.
+    echo Выполните в папке проекта:
+    echo   git fetch origin
+    echo   git switch --track -c !TARGET! origin/!TARGET!
+    echo Если локальная ветка уже существует: git switch !TARGET!
+    goto :fail
+)
+
 rem --- 0. Подпись коммитов: на новой машине её обычно нет, без неё git
 rem      отказывается коммитить с невнятной ошибкой по-английски.
 git config user.email >nul 2>nul
 if errorlevel 1 (
     echo Подпись коммитов не задана - ставлю ту же, что на других компьютерах.
-    git config --global user.name "parvinmustafaev18-source"
-    git config --global user.email "parvinmustafaev18-source@users.noreply.github.com"
+    git config user.name "parvinmustafaev18-source"
+    git config user.email "parvinmustafaev18-source@users.noreply.github.com"
     echo.
 )
 
@@ -55,30 +78,27 @@ if errorlevel 1 (
     echo.
 )
 
-set "CUR="
-for /f "tokens=*" %%B in ('git rev-parse --abbrev-ref HEAD') do set "CUR=%%B"
-
-rem --- 3. Забрать с GitHub: сначала общую ветку, затем ветку Claude ---
-echo Забираю свежую версию (ветка !CUR!)...
-git fetch --prune origin
+rem --- 3. Забрать только стабильную версию без LIRTHICK ---
+echo Забираю свежую версию без LIRTHICK: !TARGET!...
+git fetch origin "refs/heads/!TARGET!:refs/remotes/origin/!TARGET!"
 if errorlevel 1 (
     echo.
     echo [ОШИБКА] Не удалось связаться с GitHub. Проверьте интернет.
     goto :fail
 )
 
-git merge --no-edit origin/main
+rem Проверить входящую версию до слияния и установки.
+git grep -q -F LIRTHICK "origin/!TARGET!" -- "*.cs" "MeshPlugin.csproj"
+if errorlevel 2 goto :fail
+if not errorlevel 1 goto :wrongversion
+
+git merge --ff-only "origin/!TARGET!"
 if errorlevel 1 goto :mergefail
 
-rem Ветка Claude называется claude/... и меняется от задачи к задаче,
-rem поэтому берём самую свежую по времени коммита, а не по имени.
-set "AIBRANCH="
-for /f "tokens=*" %%B in ('git for-each-ref --sort=-committerdate --format="%%(refname:short)" --count=1 "refs/remotes/origin/claude/*"') do set "AIBRANCH=%%B"
-if defined AIBRANCH (
-    echo Ветка Claude: !AIBRANCH!
-    git merge --no-edit "!AIBRANCH!"
-    if errorlevel 1 goto :mergefail
-)
+rem Проверить и локальный код: свои коммиты могли вернуть команду.
+git grep -q -F LIRTHICK -- "*.cs" "MeshPlugin.csproj"
+if errorlevel 2 goto :fail
+if not errorlevel 1 goto :wrongversion
 echo.
 
 rem --- 4. Собрать; без Visual Studio (код 2) поставить готовую сборку ---
@@ -101,7 +121,7 @@ if errorlevel 1 (
     git commit -m "Сборка с компьютера %COMPUTERNAME% от %DATE%"
     if errorlevel 1 goto :fail
 )
-git push -u origin "!CUR!"
+git push -u origin "HEAD:refs/heads/!TARGET!"
 if errorlevel 1 (
     echo.
     echo [ОШИБКА] Не удалось отправить на GitHub.
@@ -113,7 +133,7 @@ if errorlevel 1 (
 :done
 echo.
 echo ==========================================
-echo   ГОТОВО
+echo   ГОТОВО - версия без LIRTHICK
 echo ==========================================
 echo.
 echo Запустите AutoCAD - плагин загрузится сам.
@@ -124,9 +144,14 @@ exit /b 0
 
 :mergefail
 echo.
-echo [ВНИМАНИЕ] Не удалось совместить правки автоматически.
-echo Один и тот же файл менялся в двух местах. Сами это не разбирайте -
-echo откройте Claude Code в этой папке и скажите "конфликт при слиянии".
+echo [СТОП] Локальная и серверная версии разошлись.
+echo Автоматическое слияние не выполняется, ваши коммиты сохранены.
+echo Откройте помощника в этой папке для разбора расхождения.
+goto :fail
+
+:wrongversion
+echo.
+echo [СТОП] В исходниках обнаружен LIRTHICK. Установка не выполняется.
 goto :fail
 
 :fail
