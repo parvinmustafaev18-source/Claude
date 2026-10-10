@@ -85,8 +85,9 @@ namespace MeshPlugin
                         var sourceLayer = (LayerTableRecord)tr.GetObject(polyline.LayerId, OpenMode.ForRead);
                         if (sourceLayer.IsLocked)
                             throw new InvalidOperationException($"Слой {polyline.Layer} заблокирован.");
-                        if (!polyline.Closed || !IsPolylineFlatXY(polyline) || PolylineHasArcs(polyline))
-                            throw new InvalidOperationException($"Контур {id.Handle}: нужна замкнутая полилиния без дуг в плоскости XY на отметке 0.");
+                        string reason = PolylineContourReason(polyline);
+                        if (reason != null)
+                            throw new InvalidOperationException($"Контур {id.Handle}: {reason}.");
                         var poly = GetPolylineVertices(polyline);
                         if (!SlabZoneCore.ValidatePolygon(poly, out string error))
                             throw new InvalidOperationException($"Контур {id.Handle}: {error}.");
@@ -118,6 +119,30 @@ namespace MeshPlugin
             }
         }
 
+        // Почему полилиния не годится как контур — ТОЧНАЯ причина вместо общей
+        // фразы «нужна замкнутая полилиния без дуг в плоскости XY на отметке 0»:
+        // у «не замкнута», «не в плоскости XY», «не на нуле» и «есть дуги»
+        // способы лечения разные, а по общему тексту инженер их не различал.
+        // Возвращает null, если контур годится.
+        private string PolylineContourReason(Polyline pline)
+        {
+            if (!pline.Closed)
+                return "полилиния не замкнута — свойство «Замкнуто» = Нет (PEDIT -> Замкнуть"
+                    + " или Свойства -> Замкнуто = Да). Совпадения последней вершины с первой недостаточно";
+            if (!pline.Normal.IsParallelTo(Vector3d.ZAxis) || pline.Normal.Z <= 0)
+                return "полилиния лежит не в плоскости XY: своя ПСК или перевёрнутая нормаль"
+                    + " (начертите контур в мировой ПСК, вид сверху)";
+            if (Math.Abs(pline.Elevation) >= MeshTol.OnSegment)
+                return $"полилиния на отметке Z = {pline.Elevation:0.###} мм, нужна 0"
+                    + " (Свойства -> Высота = 0 либо переместите контур на нулевую отметку)";
+            int n = pline.NumberOfVertices;
+            for (int i = 0; i < n; i++)
+                if (Math.Abs(pline.GetBulgeAt(i)) > MeshTol.Zero && (i < n - 1 || pline.Closed))
+                    return $"в полилинии есть дуговой сегмент (вершина {i + 1}): дуги не допускаются"
+                        + " — замените дугу ломаной";
+            return null;
+        }
+
         // Контуры помеченных областей со всех слоёв MESH_MARK(...). Комментарий —
         // то, что стоит в имени слоя между скобками: контуры с одинаковым
         // комментарием получат в выгрузке ОДИН номер жёсткости.
@@ -131,7 +156,7 @@ namespace MeshPlugin
                 var entity = tr.GetObject(id, OpenMode.ForRead) as Entity;
                 if (entity == null || !IsMarkZoneLayer(entity.Layer)) continue;
                 var polyline = entity as Polyline;
-                if (polyline == null || !polyline.Closed || !IsPolylineFlatXY(polyline) || PolylineHasArcs(polyline))
+                if (polyline == null || PolylineContourReason(polyline) != null)
                 { skipped++; continue; }
                 var poly = GetPolylineVertices(polyline);
                 if (!SlabZoneCore.ValidatePolygon(poly, out _)) { skipped++; continue; }

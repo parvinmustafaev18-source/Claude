@@ -196,8 +196,9 @@ namespace MeshPlugin
 
         private List<Point2d> ReadSlabZonePolygon(Polyline polyline)
         {
-            if (!polyline.Closed || !IsPolylineFlatXY(polyline) || PolylineHasArcs(polyline))
-                throw new InvalidOperationException($"Контур зоны {polyline.ObjectId.Handle}: нужна замкнутая полилиния без дуг в плоскости XY на отметке 0.");
+            string reason = PolylineContourReason(polyline);
+            if (reason != null)
+                throw new InvalidOperationException($"Контур зоны {polyline.ObjectId.Handle}: {reason}.");
             var polygon = GetPolylineVertices(polyline);
             if (!SlabZoneCore.ValidatePolygon(polygon, out string error))
                 throw new InvalidOperationException($"Контур зоны {polyline.ObjectId.Handle}: {error}.");
