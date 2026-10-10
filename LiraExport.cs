@@ -346,6 +346,12 @@ namespace MeshPlugin
                     HolePolys = holePolys,
                     PylonRects = pylonRects,
                     SlabZones = ReadSlabZones(tr, db),
+                    // Тот же набор рёбер, по которому LIRZONE принимал контур
+                    // (сетка, оси стен, контуры плит). Отдельный проход по
+                    // чертежу намеренный: граф экспорта содержит только указанный
+                    // мышью контур плиты, и без этого списка зона, принятая
+                    // регистрацией, отвергалась бы при экспорте.
+                    ZoneCoverSegments = ReadZoneBoundarySegments(tr, db),
                     WallOrig = wallOrig,
                     WallThickness = wallOrigThickness,
                     WallIsPylon = wallOrigIsPylon,
@@ -388,6 +394,16 @@ namespace MeshPlugin
 
                 if (task.LostFacePts.Count > 0)
                     DrawProblemMarks(tr, db, ProblemMark.From(task.LostFacePts, "грань потеряна"));
+
+                // Стороны зон толщины, не прошедшие по рёбрам сетки. Подпись у
+                // каждого круга своя: имя зоны и номер стороны, как в журнале.
+                if (task.ZoneSidePts.Count > 0)
+                {
+                    var zoneMarks = new List<ProblemMark>();
+                    for (int i = 0; i < task.ZoneSidePts.Count; i++)
+                        zoneMarks.Add(new ProblemMark(task.ZoneSidePts[i], task.ZoneSideLabels[i]));
+                    DrawProblemMarks(tr, db, zoneMarks);
+                }
 
                 ed.WriteMessage($"Легенда: {legendPath}\n");
                 ed.WriteMessage($"Расчёт экспорта: {exportWatch.Elapsed.TotalSeconds:0.0} с\n");

@@ -64,6 +64,14 @@ internal static class SlabZoneTests
             edges = Edges(square);
             edges[0] = new[] { new Point2d(0, 1), new Point2d(100, 1) };
             Check(!SlabZoneCore.BoundaryCovered(square, edges, SlabZoneCore.IndexSegments(edges), out _), "offset boundary");
+            // Экспорт отмечает кругами ВСЕ негодные стороны сразу, а не первую.
+            var open1 = SlabZoneCore.UncoveredSides(square, edges, SlabZoneCore.IndexSegments(edges));
+            Check(open1.Count == 1 && open1[0] == 0, "one uncovered side");
+            edges[1] = new[] { new Point2d(99, 0), new Point2d(99, 100) };
+            var open2 = SlabZoneCore.UncoveredSides(square, edges, SlabZoneCore.IndexSegments(edges));
+            Check(open2.Count == 2 && open2[0] == 0 && open2[1] == 1, "two uncovered sides");
+            var full = Edges(square);
+            Check(SlabZoneCore.UncoveredSides(square, full, SlabZoneCore.IndexSegments(full)).Count == 0, "no uncovered sides");
             var zones = new List<SlabThicknessZone> { new SlabThicknessZone(square, 500, "A") };
             Check(Thickness(inside, zones) == 500, "zone thickness");
             Check(Thickness(Poly(90, 20, 110, 20, 110, 40, 90, 40), zones) == 0, "partial not assigned");

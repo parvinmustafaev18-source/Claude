@@ -143,36 +143,56 @@ namespace MeshPlugin
             return index;
         }
 
+        // Одна сторона: покрыта ли она рёбрами по всей длине. Рёбра считаются
+        // покрытием, только если ЛЕЖАТ на стороне (оба конца ближе OnSegment к её
+        // прямой): ребро, пересекающее сторону поперёк, узла на ней не даёт.
+        private static bool SideCovered(List<Point2d> polygon, int side,
+            List<Point2d[]> segments, BboxIndex index)
+        {
+            Point2d a = polygon[side], b = polygon[(side + 1) % polygon.Count];
+            double length = a.GetDistanceTo(b), tol = MeshTol.OnSegment / length;
+            var intervals = new List<double[]>();
+            foreach (int j in index.Query(Math.Min(a.X, b.X) - MeshTol.OnSegment,
+                Math.Min(a.Y, b.Y) - MeshTol.OnSegment, Math.Max(a.X, b.X) + MeshTol.OnSegment,
+                Math.Max(a.Y, b.Y) + MeshTol.OnSegment))
+            {
+                Point2d c = segments[j][0], d = segments[j][1];
+                if (Math.Abs(Cross(a, b, c)) / length > MeshTol.OnSegment
+                    || Math.Abs(Cross(a, b, d)) / length > MeshTol.OnSegment) continue;
+                double t0 = Parameter(c, a, b), t1 = Parameter(d, a, b);
+                double start = Math.Max(0.0, Math.Min(t0, t1)), end = Math.Min(1.0, Math.Max(t0, t1));
+                if (end >= start) intervals.Add(new double[] { start, end });
+            }
+            intervals.Sort((x, y) => x[0].CompareTo(y[0]));
+            double covered = 0;
+            foreach (var interval in intervals)
+            {
+                if (interval[0] > covered + tol) break;
+                covered = Math.Max(covered, interval[1]);
+            }
+            return covered >= 1.0 - tol;
+        }
+
+        // Первая негодная сторона: этим LIRZONE отказывает при регистрации контура.
         internal static bool BoundaryCovered(List<Point2d> polygon, List<Point2d[]> segments,
             BboxIndex index, out int missingSide)
         {
             missingSide = -1;
             for (int i = 0; i < polygon.Count; i++)
-            {
-                Point2d a = polygon[i], b = polygon[(i + 1) % polygon.Count];
-                double length = a.GetDistanceTo(b), tol = MeshTol.OnSegment / length;
-                var intervals = new List<double[]>();
-                foreach (int j in index.Query(Math.Min(a.X, b.X) - MeshTol.OnSegment,
-                    Math.Min(a.Y, b.Y) - MeshTol.OnSegment, Math.Max(a.X, b.X) + MeshTol.OnSegment,
-                    Math.Max(a.Y, b.Y) + MeshTol.OnSegment))
-                {
-                    Point2d c = segments[j][0], d = segments[j][1];
-                    if (Math.Abs(Cross(a, b, c)) / length > MeshTol.OnSegment
-                        || Math.Abs(Cross(a, b, d)) / length > MeshTol.OnSegment) continue;
-                    double t0 = Parameter(c, a, b), t1 = Parameter(d, a, b);
-                    double start = Math.Max(0.0, Math.Min(t0, t1)), end = Math.Min(1.0, Math.Max(t0, t1));
-                    if (end >= start) intervals.Add(new double[] { start, end });
-                }
-                intervals.Sort((x, y) => x[0].CompareTo(y[0]));
-                double covered = 0;
-                foreach (var interval in intervals)
-                {
-                    if (interval[0] > covered + tol) break;
-                    covered = Math.Max(covered, interval[1]);
-                }
-                if (covered < 1.0 - tol) { missingSide = i; return false; }
-            }
+                if (!SideCovered(polygon, i, segments, index)) { missingSide = i; return false; }
             return true;
+        }
+
+        // ВСЕ негодные стороны: экспорт на них не отказывает, а предупреждает и
+        // отмечает каждую кругом, поэтому одной первой стороны ему мало — иначе
+        // инженер правил бы контур по одной стороне за запуск.
+        internal static List<int> UncoveredSides(List<Point2d> polygon, List<Point2d[]> segments,
+            BboxIndex index)
+        {
+            var result = new List<int>();
+            for (int i = 0; i < polygon.Count; i++)
+                if (!SideCovered(polygon, i, segments, index)) result.Add(i);
+            return result;
         }
 
         internal static double FindThickness(List<Point2d> element, List<SlabThicknessZone> zones,

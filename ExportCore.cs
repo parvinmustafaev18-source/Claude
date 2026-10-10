@@ -26,6 +26,13 @@ namespace MeshPlugin
         public List<List<Point2d>> HolePolys = new List<List<Point2d>>();
         public List<List<Point2d>> PylonRects = new List<List<Point2d>>();
         public List<SlabThicknessZone> SlabZones = new List<SlabThicknessZone>();
+        // Рёбра ТОЛЬКО для проверки границ зон: сетка, оси стен и контуры плит со
+        // всех слоёв FOUNDATION_SLABS(, как их читает LIRZONE при регистрации. В
+        // планарный граф не попадают — иначе экспорт получил бы лишние пластины.
+        // Без этого списка проверка экспорта была строже регистрации: в граф идёт
+        // только тот контур плиты, который указали мышью, и зона, принятая
+        // LIRZONE по стороне вдоль другого контура, на экспорте падала.
+        public List<Point2d[]> ZoneCoverSegments = new List<Point2d[]>();
 
         // Стены: исходные отрезки и их свойства (индексы совпадают).
         public List<Point2d[]> WallOrig = new List<Point2d[]>();
@@ -79,6 +86,10 @@ namespace MeshPlugin
         public int DoorJambSplits, DoorPiers, DoorRowsSkipped, FailedFaces;
         public List<Point2d> LostFacePts = new List<Point2d>();
         public List<string> LostFaceCenters = new List<string>();
+        // Стороны зон, не прошедшие по рёбрам сетки: середина стороны и подпись
+        // для круга ПРОБЛЕМА (индексы совпадают). Экспорт при этом выполняется.
+        public List<Point2d> ZoneSidePts = new List<Point2d>();
+        public List<string> ZoneSideLabels = new List<string>();
         public Dictionary<int, string> StiffTitles = new Dictionary<int, string>();
     }
 
@@ -111,10 +122,15 @@ namespace MeshPlugin
             double pylonStiffFactor = input.PylonStiffFactor;
             string taskName = input.TaskName;
 
-            // Зоны не добавляются в граф: контур обязан лежать на готовых рёбрах.
+            // Зоны не добавляются в граф: их границы ищутся среди ГОТОВЫХ рёбер.
             if (input.SlabZones.Count > 0)
             {
-                var boundaryIndex = SlabZoneCore.IndexSegments(input.Segments);
+                // Покрытие ищем и по рёбрам графа, и по контурам плит: см.
+                // ZoneCoverSegments — иначе проверка экспорта строже регистрации.
+                var coverSegments = new List<Point2d[]>(input.Segments);
+                coverSegments.AddRange(input.ZoneCoverSegments);
+                var boundaryIndex = SlabZoneCore.IndexSegments(coverSegments);
+                int zonesWithOpenSides = 0;
                 foreach (var zone in input.SlabZones)
                 {
                     if (!SlabZoneCore.Finite(zone.ThicknessMm) || zone.ThicknessMm <= 0
@@ -122,9 +138,30 @@ namespace MeshPlugin
                     { res.Error = $"\nНекорректная зона {zone.Name}. Повторите LIRZONE.\n"; return res; }
                     if (!SlabZoneCore.ContainsPolygon(zone.Polygon, contourPts))
                     { res.Error = $"\nЗона {zone.Name} выходит за выбранный контур плиты.\n"; return res; }
-                    if (!SlabZoneCore.BoundaryCovered(zone.Polygon, input.Segments, boundaryIndex, out int side))
-                    { res.Error = $"\nЗона {zone.Name}: сторона {side + 1} не проходит по рёбрам сетки. Исправьте контур зоны перед экспортом.\n"; return res; }
+
+                    // Сторона не по рёбрам сетки — это НЕ порча схемы, а потеря
+                    // толщины у пограничных ячеек: толщину зоны получают только
+                    // элементы, попавшие в неё ЦЕЛИКОМ (FindThickness ниже), а
+                    // элемент, разрезанный такой стороной, остаётся базовой
+                    // толщины. Поэтому экспорт идёт дальше, а место правки
+                    // инженер видит по кругу ПРОБЛЕМА и строке в журнале.
+                    var openSides = SlabZoneCore.UncoveredSides(zone.Polygon, coverSegments, boundaryIndex);
+                    if (openSides.Count == 0) continue;
+                    zonesWithOpenSides++;
+                    foreach (int side in openSides)
+                    {
+                        Point2d a = zone.Polygon[side], b = zone.Polygon[(side + 1) % zone.Polygon.Count];
+                        res.ZoneSidePts.Add(new Point2d((a.X + b.X) / 2.0, (a.Y + b.Y) / 2.0));
+                        res.ZoneSideLabels.Add($"зона {zone.Name}, сторона {side + 1}");
+                        res.Log.Add($"\nЗона {zone.Name}: сторона {side + 1} не проходит по рёбрам сетки"
+                            + $" — ({a.X:0.###}, {a.Y:0.###}) -> ({b.X:0.###}, {b.Y:0.###}) мм."
+                            + " Элементы, разрезанные этой стороной, останутся базовой толщины.\n");
+                    }
                 }
+                if (zonesWithOpenSides > 0)
+                    res.Log.Add($"\nЗон с границей не по рёбрам сетки: {zonesWithOpenSides} из {input.SlabZones.Count},"
+                        + $" сторон отмечено кругами: {res.ZoneSidePts.Count}."
+                        + " Проведите линии сетки по этим сторонам (LIRSPLIT) или поправьте контур и повторите LIRZONE.\n");
             }
             int columnsWithoutDims = input.ColumnsWithoutDims;
 
