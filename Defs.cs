@@ -210,6 +210,17 @@ namespace MeshPlugin
         private const string ProblemLayerName = "ПРОБЛЕМА";
         private const double ProblemMarkRadius = 300.0;
 
+        // Грани, не попавшие в расчётную схему ЛИРЫ (LIREXPORT). Слой свой, а не
+        // ПРОБЛЕМА: круг с подписью показывает ТОЧКУ и причину, а инженеру нужна
+        // ФОРМА — какой именно кусок плиты остался без элементов и будет дырой в
+        // схеме. Красный, толстая полилиния; слой отдельный, чтобы его можно было
+        // погасить одним щелчком, не трогая остальные маркеры.
+        private const string LostFaceLayerName = "ПОТЕРЯННЫЕ_ГРАНИ";
+        // Ширина обводки в миллиметрах ЧЕРТЕЖА (ConstantWidth), а не вес линии:
+        // вес не видно, пока в AutoCAD не включено отображение весов (LWDISPLAY),
+        // а «выделить толстым» должно работать сразу после экспорта.
+        private const double LostFaceWidth = 40.0;
+
         // Высота подписи внутри круга ПРОБЛЕМА. Круг Ø600 — короткое слово вроде
         // «вылез» помещается целиком, длинное («самопересечение») выходит за круг,
         // и это лучше нечитаемой мелочи: подпись нужна, чтобы инженер понял причину
@@ -293,7 +304,8 @@ namespace MeshPlugin
         private static bool IsMarkLayer(string layer)
         {
             return !string.IsNullOrEmpty(layer)
-                && (layer.StartsWith(MarkLayerPrefix) || layer == ProblemLayerName || layer == BadElementsLayerName);
+                && (layer.StartsWith(MarkLayerPrefix) || layer == ProblemLayerName
+                    || layer == BadElementsLayerName || layer == LostFaceLayerName);
         }
 
         // Служебные слои плагина: объекты, созданные его же командами, не являются

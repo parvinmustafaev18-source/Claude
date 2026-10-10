@@ -86,6 +86,10 @@ namespace MeshPlugin
         public int DoorJambSplits, DoorPiers, DoorRowsSkipped, FailedFaces;
         public List<Point2d> LostFacePts = new List<Point2d>();
         public List<string> LostFaceCenters = new List<string>();
+        // Контур каждой потерянной грани (для обводки в слое ПОТЕРЯННЫЕ_ГРАНИ) и
+        // причина потери (подпись круга ПРОБЛЕМА). Индексы совпадают с LostFacePts.
+        public List<List<Point2d>> LostFacePolys = new List<List<Point2d>>();
+        public List<string> LostFaceReasons = new List<string>();
         // Стороны зон, не прошедшие по рёбрам сетки: середина стороны и подпись
         // для круга ПРОБЛЕМА (индексы совпадают). Экспорт при этом выполняется.
         public List<Point2d> ZoneSidePts = new List<Point2d>();
@@ -243,12 +247,27 @@ namespace MeshPlugin
             int failedFaces = 0, fanFaces = 0;
             var lostFaceCenters = new List<string>();
             var lostFacePts = new List<Point2d>();
+            var lostFacePolys = new List<List<Point2d>>();
+            var lostFaceReasons = new List<string>();
+
+            // ЕДИНСТВЕННОЕ место, где грань объявляется не попавшей в схему: отсюда
+            // идут и круг с причиной, и обводка контура, и строка в журнале. Новая
+            // причина потери поэтому не может появиться без отметки на чертеже —
+            // та же мысль, что у ProblemMark: невидимых дыр в схеме быть не должно.
+            void LoseFace(List<Point2d> lostPoly, string reason)
+            {
+                Point2d fc = PolygonCentroid(lostPoly);
+                lostFacePts.Add(fc);
+                lostFaceCenters.Add($"({fc.X:0}, {fc.Y:0})");
+                lostFacePolys.Add(new List<Point2d>(lostPoly));
+                lostFaceReasons.Add(reason);
+            }
 
             // Грани -> пластины плиты: 3 узла -> КЭ 42, 4 узла -> КЭ 44 (порядок узлов
             // КЭ 44 — "змейкой": p0 p1 p3 p2), больше 4 (висячие узлы) -> триангуляция.
             // Грань с центром пилона внутри разбивается веером треугольников вокруг
             // центра — центр становится узлом сетки, к нему цепляется стержень пилона.
-            int spikeFans = 0, multiSpikeFaces = 0;
+            int spikeFans = 0, multiSpikeFaces = 0, spikeSlivers = 0;
             foreach (var rawFace in faces)
             {
                 // Конец стены внутри ячейки — тупиковое ребро графа: обход грани
@@ -275,9 +294,20 @@ namespace MeshPlugin
                         break;
                     }
                 }
-                if (face.Count < 3) continue;
-
                 var poly = new List<Point2d>();
+
+                if (face.Count < 3)
+                {
+                    // Грань осталась из одних тупиковых рёбер. Площадь у неё БЫЛА
+                    // (вырожденные отброшены ещё в ExtractPlanarFaces), значит в
+                    // ЛИРЕ на её месте дыра. Раньше такая грань пропускалась
+                    // молча — ни счётчика, ни отметки на плане.
+                    var rawPoly = new List<Point2d>();
+                    foreach (int idx in rawFace) rawPoly.Add(nodes[idx]);
+                    if (rawPoly.Count >= 3) LoseFace(rawPoly, "грань из тупиковых рёбер");
+                    continue;
+                }
+
                 foreach (int idx in face) poly.Add(nodes[idx]);
 
                 if (spikeTips.Count > 0)
@@ -289,7 +319,11 @@ namespace MeshPlugin
                     {
                         Point2d va = nodes[face[i]];
                         Point2d vb = nodes[face[(i + 1) % face.Count]];
-                        if (Math.Abs(CrossProduct(va, vb, s)) < 1.0) continue; // вырожденный треугольник
+                        // Вырожденный треугольник: двойная площадь меньше 1 мм², то
+                        // есть сам он тоньше 0.5 мм². В схему он не идёт, но и
+                        // обводить его нечем — контур такой площади на плане не
+                        // виден. Поэтому только счётчик в журнал.
+                        if (Math.Abs(CrossProduct(va, vb, s)) < 1.0) { spikeSlivers++; continue; }
                         elements.Add(new int[] { 42, 1, sNode, SlabNode(face[i]), SlabNode(face[(i + 1) % face.Count]) });
                     }
                     spikeFans++;
@@ -332,17 +366,14 @@ namespace MeshPlugin
                     foreach (var t in TriangulateSimplePolygon(poly, ref failed))
                         elements.Add(new int[] { 42, 1, Node3(t[0].X, t[0].Y, 0), Node3(t[1].X, t[1].Y, 0), Node3(t[2].X, t[2].Y, 0) });
                     failedFaces += failed;
-                    if (failed > 0)
-                    {
-                        Point2d fc = PolygonCentroid(poly);
-                        lostFaceCenters.Add($"({fc.X:0}, {fc.Y:0})");
-                        lostFacePts.Add(fc);
-                    }
+                    if (failed > 0) LoseFace(poly, "грань потеряна");
                 }
             }
 
             if (spikeFans > 0)
                 res.Log.Add($"\nКонцов стен внутри ячеек, врезанных в плиту веером треугольников: {spikeFans}\n");
+            if (spikeSlivers > 0)
+                res.Log.Add($"\nВырожденных треугольников у концов стен пропущено: {spikeSlivers} — каждый тоньше 0.5 мм², на схему не влияют\n");
             if (multiSpikeFaces > 0)
                 res.Log.Add($"\nВНИМАНИЕ: ячеек с несколькими тупиковыми концами стен: {multiSpikeFaces} — связан только первый конец, проверьте сетку у этих стен\n");
 
@@ -672,7 +703,7 @@ namespace MeshPlugin
 
             if (lostFaceCenters.Count > 0)
             {
-                res.Log.Add($"\nВНИМАНИЕ: не удалось разбить ячеек: {lostFaceCenters.Count}, центры: {string.Join(", ", lostFaceCenters)} — в этих местах в ЛИРЕ будут дыры. Ячейки отмечены кругами в слое {ProblemLayerName}.\n");
+                res.Log.Add($"\nВНИМАНИЕ: граней не попало в расчётную схему: {lostFaceCenters.Count}, центры: {string.Join(", ", lostFaceCenters)} — в этих местах в ЛИРЕ будут дыры. Причина у каждой подписана в круге слоя {ProblemLayerName}, контур обведён красным в слое {LostFaceLayerName}.\n");
             }
             res.Nodes3 = nodes3;
             res.Elements = elements;
@@ -697,6 +728,8 @@ namespace MeshPlugin
             res.FailedFaces = failedFaces;
             res.LostFacePts = lostFacePts;
             res.LostFaceCenters = lostFaceCenters;
+            res.LostFacePolys = lostFacePolys;
+            res.LostFaceReasons = lostFaceReasons;
             res.StiffTitles = wallStiffTitle;
             res.Ok = true;
             return res;

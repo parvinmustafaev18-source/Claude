@@ -24,6 +24,7 @@
 | `MESH_GAP_MARKS` | `ValidateContour` | — | разрыв незамкнутого контура, круги R150 |
 | `ПРОБЛЕМА` | LIRBUILD, LIREXPORT | — | места, где сетка не построилась, R300 |
 | `ПЛОХИЕ` | — (наследие MESHQUALITY), LIRBUILD чистит | — | контуры элементов α < 0.3 на старых чертежах |
+| `ПОТЕРЯННЫЕ_ГРАНИ` | LIREXPORT (`DrawLostFaces`) | — | обводка граней, не попавших в расчётную схему: замкнутая красная полилиния шириной `LostFaceWidth` (40 мм в чертеже, не вес линии — вес не видно без LWDISPLAY). Стирается при каждом запуске экспорта |
 
 Константы имён: Commands.cs:1097–1109 (`ColumnLayerName`,
 `TriangulationLayerName`, `HoleLayerName`, `DoorMarkLayerName`, `DoorMarkSize`),
@@ -52,7 +53,7 @@ Commands.cs:972–982 (маркерные слои и радиусы).
   Используется в LIRWALLAXIS (что не принимать за
   контур стены), `MovePolylinesToHoleLayer` (что не превращать в отверстие).
 - `KeepLayer` внутри LIRLAYERS — **шире** `IsServiceLayer`: плюс `IsMarkLayer`
-  (`MESH_*`, `ПРОБЛЕМА`, `ПЛОХИЕ`). Списки разные намеренно: LIRLAYERS
+  (`MESH_*`, `ПРОБЛЕМА`, `ПЛОХИЕ`, `ПОТЕРЯННЫЕ_ГРАНИ`). Списки разные намеренно: LIRLAYERS
   перекрашивает по рамке и обязана щадить даже маркеры.
 - Толщина/высота из имени — `TryParseLayerHeight` (regex `H-([\d.,]+)`, запятая
   и точка равноправны, разбор инвариантный). Габариты пилона — `ColumnDimsRegex`.

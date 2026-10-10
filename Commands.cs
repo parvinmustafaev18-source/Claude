@@ -1215,6 +1215,34 @@ namespace MeshPlugin
             }
         }
 
+        // Обводка граней, не попавших в расчётную схему ЛИРЫ. Круг ПРОБЛЕМА с
+        // подписью остаётся — он называет причину, — а эта полилиния показывает
+        // саму форму дыры: в ЛИРЕ на её месте не будет ни одного элемента.
+        // Полилиния замкнутая, красная и широкая (LostFaceWidth мм в чертеже),
+        // поэтому видна на плане сразу, без включения весов линий.
+        private void DrawLostFaces(Transaction tr, Database db, List<List<Point2d>> faces)
+        {
+            if (faces == null || faces.Count == 0) return;
+
+            EnsureLayer(db, tr, LostFaceLayerName, 1); // красный
+            BlockTableRecord ms = (BlockTableRecord)tr.GetObject(db.CurrentSpaceId, OpenMode.ForWrite);
+
+            foreach (var face in faces)
+            {
+                if (face == null || face.Count < 3) continue;
+
+                Polyline pl = new Polyline();
+                for (int i = 0; i < face.Count; i++)
+                    pl.AddVertexAt(i, face[i], 0, 0, 0);
+                pl.Closed = true;
+                pl.ConstantWidth = LostFaceWidth;
+                pl.Layer = LostFaceLayerName;
+                pl.ColorIndex = 1;
+                ms.AppendEntity(pl);
+                tr.AddNewlyCreatedDBObject(pl, true);
+            }
+        }
+
         private void EraseMarksOnLayer(Transaction tr, Database db, string layerName)
         {
             BlockTableRecord ms = (BlockTableRecord)tr.GetObject(db.CurrentSpaceId, OpenMode.ForRead);

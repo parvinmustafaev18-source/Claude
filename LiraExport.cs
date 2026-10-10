@@ -155,8 +155,11 @@ namespace MeshPlugin
                     ed.WriteMessage("\nНужен замкнутый контур (полилиния).\n");
                     return;
                 }
-                // Старые маркеры проблем стираются при каждом запуске, чтобы не копились
+                // Старые маркеры проблем стираются при каждом запуске, чтобы не копились.
+                // Обводки потерянных граней — тоже: оставшаяся от прошлого запуска
+                // красная рамка на исправленном месте хуже, чем её отсутствие.
                 EraseMarksOnLayer(tr, db, ProblemLayerName);
+                EraseMarksOnLayer(tr, db, LostFaceLayerName);
 
                 // Дуги и полилинии вне плоскости XY читаются как ломаные в WCS.
                 WarnBadPolylines(tr, db, ed);
@@ -392,8 +395,21 @@ namespace MeshPlugin
                 System.IO.File.WriteAllText(outPath, task.TaskText, System.Text.Encoding.GetEncoding(1251));
                 System.IO.File.WriteAllText(legendPath, task.LegendText, System.Text.Encoding.GetEncoding(1251));
 
+                // Грани, не попавшие в расчётную схему: круг с причиной (как было)
+                // плюс обводка контура красной толстой полилинией в своём слое —
+                // по кругу видно, ПОЧЕМУ, по обводке — ГДЕ именно и какой формы
+                // будет дыра в схеме ЛИРЫ.
                 if (task.LostFacePts.Count > 0)
-                    DrawProblemMarks(tr, db, ProblemMark.From(task.LostFacePts, "грань потеряна"));
+                {
+                    var lostMarks = new List<ProblemMark>();
+                    for (int i = 0; i < task.LostFacePts.Count; i++)
+                        lostMarks.Add(new ProblemMark(task.LostFacePts[i],
+                            i < task.LostFaceReasons.Count ? task.LostFaceReasons[i] : "грань потеряна"));
+                    DrawProblemMarks(tr, db, lostMarks);
+                    DrawLostFaces(tr, db, task.LostFacePolys);
+                    ed.WriteMessage($"Граней не попало в схему: {task.LostFacePts.Count};"
+                        + $" контуры обведены красным в слое {LostFaceLayerName}, причина — в круге слоя {ProblemLayerName}.\n");
+                }
 
                 // Стороны зон толщины, не прошедшие по рёбрам сетки. Подпись у
                 // каждого круга своя: имя зоны и номер стороны, как в журнале.
