@@ -26,6 +26,9 @@ namespace MeshPlugin
         public List<List<Point2d>> HolePolys = new List<List<Point2d>>();
         public List<List<Point2d>> PylonRects = new List<List<Point2d>>();
         public List<SlabThicknessZone> SlabZones = new List<SlabThicknessZone>();
+        // Помеченные области (LIRMARK): параметры расчёта не меняют, дают только
+        // свой номер жёсткости — чтобы область выделялась в ЛИРЕ фильтром.
+        public List<MarkZone> MarkZones = new List<MarkZone>();
         // Рёбра ТОЛЬКО для проверки границ зон: сетка, оси стен и контуры плит со
         // всех слоёв FOUNDATION_SLABS(, как их читает LIRZONE при регистрации. В
         // планарный граф не попадают — иначе экспорт получил бы лишние пластины.
@@ -83,6 +86,7 @@ namespace MeshPlugin
         public int WallElemCount, BarCount, FanFaces, SpikeFans, MultiSpikeFaces;
         public int HoleElemsRemoved, PylonBodyElems, PylonBodyStiffId;
         public int ZoneElems;
+        public int MarkElems, MarkElemsSkipped;
         public int DoorJambSplits, DoorPiers, DoorRowsSkipped, FailedFaces;
         public List<Point2d> LostFacePts = new List<Point2d>();
         public List<string> LostFaceCenters = new List<string>();
@@ -602,6 +606,69 @@ namespace MeshPlugin
                 }
                 res.Log.Add($"\nЗоны толщины: контуров {input.SlabZones.Count}; элементов плиты целиком внутри {zoneElems}. Тела пилонов сохранены.\n");
             }
+
+            // ПОМЕЧЕННЫЕ ОБЛАСТИ (LIRMARK) — только номер жёсткости, расчёт тот же.
+            // Параметры копируются у плиты один в один (толщина, E, RO, ν), поэтому
+            // схема от пометки не меняется ничем: ЛИРА принимает одинаковые по
+            // параметрам жёсткости под разными номерами, и область выделяется
+            // фильтром по жёсткости. Имени у жёсткости в текстовом формате нет —
+            // комментарий уходит в файл легенды рядом с задачей.
+            //
+            // Правило попадания — ЦЕНТР готового элемента (как у отверстий и тел
+            // пилонов), а не «целиком внутри» как у зон толщины: пометка ничего не
+            // портит, поэтому пограничный элемент лучше пометить, чем потерять.
+            //
+            // Блок стоит ПОСЛЕДНИМ и берёт только элементы с жёсткостью плиты
+            // (el[1] == 1). Элемент может иметь в ЛИРЕ лишь ОДИН номер, и забрать
+            // номер у тела пилона или у зоны другой толщины значило бы изменить
+            // расчёт — пометка на это права не имеет. Сколько таких элементов
+            // область не получила, идёт в журнал: иначе инженер решил бы, что
+            // выделил фильтром всю область.
+            int markElems = 0, markSkipped = 0;
+            if (input.MarkZones.Count > 0)
+            {
+                // Вложенная (меньшая) область перебивает внешнюю — то же правило,
+                // что у зон толщины: иначе пометка внутри пометки недостижима.
+                var marksBySize = new List<MarkZone>(input.MarkZones);
+                marksBySize.Sort((z1, z2) => Math.Abs(PolygonArea(z1.Poly)).CompareTo(Math.Abs(PolygonArea(z2.Poly))));
+                var markStiffIds = new Dictionary<string, int>();
+                var markCounts = new Dictionary<string, int>();
+
+                for (int i = 0; i < slabElemCount; i++)
+                {
+                    var el = elements[i];
+                    double cx = 0, cy = 0;
+                    int vcount = el.Length - 2;
+                    for (int k = 2; k < el.Length; k++) { cx += nodes3[el[k]][0]; cy += nodes3[el[k]][1]; }
+                    Point2d ec = new Point2d(cx / vcount, cy / vcount);
+
+                    MarkZone hit = null;
+                    foreach (var mz in marksBySize)
+                        if (IsPointInPolygon(ec, mz.Poly)) { hit = mz; break; }
+                    if (hit == null) continue;
+                    if (el[1] != 1) { markSkipped++; continue; }
+
+                    int stiffId;
+                    if (!markStiffIds.TryGetValue(hit.Comment, out stiffId))
+                    {
+                        markStiffIds[hit.Comment] = stiffId = nextStiff++;
+                        wallStiffThk[stiffId] = thicknessMm;
+                        wallStiffTitle[stiffId] = $"помеченная область «{hit.Comment}» (параметры плиты H-{thicknessMm:0.#}, только для выделения в ЛИРЕ)";
+                        markCounts[hit.Comment] = 0;
+                    }
+                    el[1] = stiffId;
+                    markCounts[hit.Comment] = markCounts[hit.Comment] + 1;
+                    markElems++;
+                }
+
+                res.Log.Add($"\nПомеченные области: контуров {input.MarkZones.Count}, элементов плиты помечено {markElems}"
+                    + (markSkipped > 0 ? $", пропущено со своей жёсткостью (тело пилона или зона толщины) {markSkipped}" : "")
+                    + ". Параметры жёсткости те же, что у плиты — расчёт не меняется.\n");
+                foreach (var pair in markStiffIds)
+                    res.Log.Add($"  «{pair.Key}» = жёсткость №{pair.Value}, элементов {markCounts[pair.Key]}\n");
+            }
+            res.MarkElems = markElems;
+            res.MarkElemsSkipped = markSkipped;
 
             // Запись файла (кодировка 1251, числа с точкой, координаты мм -> м).
             // Имя задачи в документе 0 обязано совпадать с именем файла — иначе

@@ -210,6 +210,28 @@ namespace MeshPlugin
         private const string ProblemLayerName = "ПРОБЛЕМА";
         private const double ProblemMarkRadius = 300.0;
 
+        // Помеченная область плиты (LIRMARK): контур, внутри которого элементы
+        // получают ОТДЕЛЬНЫЙ номер жёсткости с теми же параметрами, что у плиты —
+        // чтобы в ЛИРЕ выделить область фильтром по жёсткости. Комментарий стоит
+        // в имени слоя: видимое состояние, а не XData (то же решение, что у метки
+        // FIX). Имя начинается с MESH_, поэтому слой автоматически попадает под
+        // IsMarkLayer и LIRLAYERS его не перекрашивает; в IsServiceLayer он внесён
+        // отдельно, иначе MovePolylinesToHoleLayer превратил бы область в отверстие.
+        private const string MarkZoneLayerPrefix = "MESH_MARK(";
+        private static bool IsMarkZoneLayer(string layer)
+        {
+            return !string.IsNullOrEmpty(layer)
+                && layer.StartsWith(MarkZoneLayerPrefix) && layer.EndsWith(")")
+                && layer.Length > MarkZoneLayerPrefix.Length + 1;
+        }
+        private static string MarkZoneComment(string layer)
+        {
+            return IsMarkZoneLayer(layer)
+                ? layer.Substring(MarkZoneLayerPrefix.Length,
+                    layer.Length - MarkZoneLayerPrefix.Length - 1)
+                : "";
+        }
+
         // Грани, не попавшие в расчётную схему ЛИРЫ (LIREXPORT). Слой свой, а не
         // ПРОБЛЕМА: круг с подписью показывает ТОЧКУ и причину, а инженеру нужна
         // ФОРМА — какой именно кусок плиты остался без элементов и будет дырой в
@@ -322,6 +344,7 @@ namespace MeshPlugin
                 || layer == HoleLayerName
                 || layer == PylonOutlineLayerName
                 || IsSlabZoneLayer(layer)
+                || IsMarkZoneLayer(layer)
                 || layer == HelpLayerName
                 || IsColumnLayer(layer);
         }

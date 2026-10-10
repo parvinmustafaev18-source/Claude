@@ -20,6 +20,7 @@
 | `WALL_DOORS_MARKS` | LIRDOORS | только чертёж | квадрат 200×200, в ЛИРУ не идёт |
 | `MESH_HOLES` | LIRBUILD (`MovePolylinesToHoleLayer`) | `GetHolePolygons`, экспорт | отверстие/проём в плите |
 | `MESH_PYLONS` | LIRPYLON (контур не стирает, а переносит) | `GetPylonOutlines` | контур пилона для отпечатка на сетке; **не пустота** — сетка внутри есть, мелкая |
+| `MESH_MARK(<комментарий>)` | LIRMARK (контур переносится) | `GetMarkZones`, экспорт | помеченная область: элементы внутри получают свой номер жёсткости с параметрами плиты, только для выделения фильтром в ЛИРЕ |
 | `MESH_ANGLE_MARKS` | `ValidateContour` | — | углы контура ≠ 90°, круги R300 |
 | `MESH_GAP_MARKS` | `ValidateContour` | — | разрыв незамкнутого контура, круги R150 |
 | `ПРОБЛЕМА` | LIRBUILD, LIREXPORT | — | места, где сетка не построилась, R300 |
@@ -49,7 +50,7 @@ Commands.cs:972–982 (маркерные слои и радиусы).
   попадания элементов, без добавления контуров в граф. LIRLAYERS сохраняет слой.
 - `IsServiceLayer` — созданное самим плагином: плита, стены, двери,
   `WALL_DOORS_MARKS`, `LINE_TRIANGULATION`, `MESH_HOLES`, `MESH_PYLONS`,
-  `COLUMNS*`, `MESH_ZONES(H-t)`.
+  `COLUMNS*`, `MESH_ZONES(H-t)`, `MESH_MARK(...)`.
   Используется в LIRWALLAXIS (что не принимать за
   контур стены), `MovePolylinesToHoleLayer` (что не превращать в отверстие).
 - `KeepLayer` внутри LIRLAYERS — **шире** `IsServiceLayer`: плюс `IsMarkLayer`

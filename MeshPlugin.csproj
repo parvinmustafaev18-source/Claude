@@ -103,6 +103,7 @@
     <Compile Include="LiraExport.cs" />
     <Compile Include="LocalSplit.cs" />
     <Compile Include="LocalSplitCore.cs" />
+    <Compile Include="MarkZone.cs" />
     <Compile Include="MeshCore.cs" />
     <Compile Include="QuadMesh.cs" />
     <Compile Include="SelfCheck.cs" />

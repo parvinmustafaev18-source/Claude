@@ -325,6 +325,12 @@ namespace MeshPlugin
 
                 ed.WriteMessage($"\n[диагностика отверстий] объектов на слое {HoleLayerName}: {holeEntCount}; из них замкнутых контуров принято: {holePolys.Count}, незамкнутых полилиний: {holeOpenPolyCount}\n");
 
+                // Помеченные области (LIRMARK): на граф и на параметры расчёта не
+                // влияют, дают только свой номер жёсткости для фильтра в ЛИРЕ.
+                var markZones = GetMarkZones(tr, db, out int markZonesSkipped);
+                if (markZonesSkipped > 0)
+                    ed.WriteMessage($"\nПомеченных областей пропущено: {markZonesSkipped} — нужна замкнутая простая полилиния без дуг в плоскости XY.\n");
+
                 // Контуры тел пилонов. В планарный граф они НЕ добавляются: их грани уже
                 // лежат в сетке (LIRBUILD отпечатывает контур), а лишние рёбра дали
                 // бы наложение. Нужны только для того, чтобы отличить элементы плиты,
@@ -349,6 +355,7 @@ namespace MeshPlugin
                     HolePolys = holePolys,
                     PylonRects = pylonRects,
                     SlabZones = ReadSlabZones(tr, db),
+                    MarkZones = markZones,
                     // Тот же набор рёбер, по которому LIRZONE принимал контур
                     // (сетка, оси стен, контуры плит). Отдельный проход по
                     // чертежу намеренный: граф экспорта содержит только указанный
