@@ -86,7 +86,7 @@ namespace MeshPlugin
         public int WallElemCount, BarCount, FanFaces, SpikeFans, MultiSpikeFaces;
         public int HoleElemsRemoved, PylonBodyElems, PylonBodyStiffId;
         public int ZoneElems;
-        public int MarkElems, MarkElemsSkipped, MarkElemsPartial;
+        public int MarkElems, MarkElemsPartial;
         public int DoorJambSplits, DoorPiers, DoorRowsSkipped, FailedFaces;
         public List<Point2d> LostFacePts = new List<Point2d>();
         public List<string> LostFaceCenters = new List<string>();
@@ -623,21 +623,25 @@ namespace MeshPlugin
             // по треугольникам контура), а не по центру элемента: у краевого
             // элемента центр врёт в обе стороны.
             //
-            // Блок стоит ПОСЛЕДНИМ и берёт только элементы с жёсткостью плиты
-            // (el[1] == 1). Элемент может иметь в ЛИРЕ лишь ОДИН номер, и забрать
-            // номер у тела пилона или у зоны другой толщины значило бы изменить
-            // расчёт — пометка на это права не имеет. Сколько таких элементов
-            // область не получила, идёт в журнал: иначе инженер решил бы, что
-            // выделил фильтром всю область.
-            int markElems = 0, markSkipped = 0, markPartial = 0;
+            // Блок стоит ПОСЛЕДНИМ среди блоков жёсткости намеренно: к этому моменту
+            // элемент уже получил свою настоящую жёсткость (плита, участок другой
+            // толщины от LIRZONE, тело пилона), и пометка делает ЕЁ дубликат с теми
+            // же параметрами. Элемент в ЛИРЕ имеет лишь ОДИН номер, поэтому иначе
+            // пришлось бы выбирать между толщиной и пометкой; дубликат снимает выбор:
+            // внутри области столько номеров, сколько там было разных жёсткостей.
+            int markElems = 0, markPartial = 0;
             if (input.MarkZones.Count > 0)
             {
                 // Вложенная (меньшая) область перебивает внешнюю — то же правило,
                 // что у зон толщины: иначе пометка внутри пометки недостижима.
                 var marksBySize = new List<MarkZone>(input.MarkZones);
                 marksBySize.Sort((z1, z2) => Math.Abs(PolygonArea(z1.Poly)).CompareTo(Math.Abs(PolygonArea(z2.Poly))));
+                // Ключ — «комментарий + исходный номер жёсткости»: одна пометка
+                // даёт столько номеров, сколько разных жёсткостей внутри неё.
                 var markStiffIds = new Dictionary<string, int>();
                 var markCounts = new Dictionary<string, int>();
+                var markLabels = new Dictionary<string, string>();
+                var markOrder = new List<string>();
 
                 // Контур раскладывается на треугольники ОДИН раз: по ним считается
                 // точная площадь попавшей части каждого элемента. Контур, который
@@ -731,34 +735,53 @@ namespace MeshPlugin
                         if (bestShare > 0.0) markPartial++;
                         continue;
                     }
-                    if (el[1] != 1) { markSkipped++; continue; }
-
+                    // Дубликат делается на КАЖДУЮ исходную жёсткость, попавшую в
+                    // контур, а не только на плиту: внутри области бывают участки
+                    // другой толщины (LIRZONE) и тела пилонов, и они обязаны
+                    // сохранить СВОИ параметры — иначе пометка изменила бы расчёт.
+                    // Поэтому ключ составной: «комментарий + исходный номер».
+                    int srcId = el[1];
+                    string key = hit.Comment + "\u0001" + srcId;
                     int stiffId;
-                    if (!markStiffIds.TryGetValue(hit.Comment, out stiffId))
+                    if (!markStiffIds.TryGetValue(key, out stiffId))
                     {
-                        markStiffIds[hit.Comment] = stiffId = nextStiff++;
-                        wallStiffThk[stiffId] = thicknessMm;
-                        wallStiffTitle[stiffId] = $"помеченная область «{hit.Comment}» (параметры плиты H-{thicknessMm:0.#}, только для выделения в ЛИРЕ)";
-                        markCounts[hit.Comment] = 0;
+                        markStiffIds[key] = stiffId = nextStiff++;
+                        // Параметры копируются у источника один в один: толщина и,
+                        // если у него был свой модуль упругости (тело пилона), он.
+                        double srcThk;
+                        if (srcId == 1 || !wallStiffThk.TryGetValue(srcId, out srcThk)) srcThk = thicknessMm;
+                        wallStiffThk[stiffId] = srcThk;
+                        double srcE;
+                        if (srcId != 1 && wallStiffE.TryGetValue(srcId, out srcE))
+                            wallStiffE[stiffId] = srcE;
+                        string srcTitle = srcId == 1
+                            ? $"плита H-{thicknessMm:0.#}"
+                            : (wallStiffTitle.ContainsKey(srcId) ? wallStiffTitle[srcId] : $"жёсткость №{srcId}");
+                        wallStiffTitle[stiffId] = $"помеченная область «{hit.Comment}»: {srcTitle} (параметры те же, №{srcId} -> №{stiffId}, только для выделения в ЛИРЕ)";
+                        markCounts[key] = 0;
+                        markLabels[key] = $"«{hit.Comment}», {srcTitle}";
+                        markOrder.Add(key);
                     }
                     el[1] = stiffId;
-                    markCounts[hit.Comment] = markCounts[hit.Comment] + 1;
+                    markCounts[key] = markCounts[key] + 1;
                     markElems++;
                 }
 
                 res.Log.Add($"\nПомеченные области: контуров {input.MarkZones.Count}, элементов плиты помечено {markElems}"
                     + $" (порог попадания — {MeshTol.MarkAreaShare * 100:0.#}% площади элемента внутри контура)"
                     + (markPartial > 0 ? $", задето контуром но порога не добрало {markPartial}" : "")
-                    + (markSkipped > 0 ? $", пропущено со своей жёсткостью (тело пилона или зона толщины) {markSkipped}" : "")
-                    + ". Параметры жёсткости те же, что у плиты — расчёт не меняется.\n");
+                    + $", создано жёсткостей {markOrder.Count}."
+                    + " Параметры у каждой те же, что у источника (толщина и модуль упругости) — расчёт не меняется.\n");
                 if (markNoTriangulation > 0)
                     res.Log.Add($"\nВНИМАНИЕ: контуров пометки, не разложенных на треугольники: {markNoTriangulation} —"
                         + " для них попадание определено по центру элемента, край области может оказаться рваным. Упростите контур.\n");
-                foreach (var pair in markStiffIds)
-                    res.Log.Add($"  «{pair.Key}» = жёсткость №{pair.Value}, элементов {markCounts[pair.Key]}\n");
+                foreach (var k in markOrder)
+                    res.Log.Add($"  {markLabels[k]} = жёсткость №{markStiffIds[k]}, элементов {markCounts[k]}\n");
+                if (markOrder.Count > input.MarkZones.Count)
+                    res.Log.Add("  Внутри области было несколько разных жёсткостей (участки другой толщины,"
+                        + " тела пилонов), поэтому у неё несколько номеров — в фильтре ЛИРЫ берите их все.\n");
             }
             res.MarkElems = markElems;
-            res.MarkElemsSkipped = markSkipped;
             res.MarkElemsPartial = markPartial;
 
             // Запись файла (кодировка 1251, числа с точкой, координаты мм -> м).
