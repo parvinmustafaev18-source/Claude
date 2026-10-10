@@ -86,7 +86,7 @@ namespace MeshPlugin
         public int WallElemCount, BarCount, FanFaces, SpikeFans, MultiSpikeFaces;
         public int HoleElemsRemoved, PylonBodyElems, PylonBodyStiffId;
         public int ZoneElems;
-        public int MarkElems, MarkElemsSkipped;
+        public int MarkElems, MarkElemsSkipped, MarkElemsPartial;
         public int DoorJambSplits, DoorPiers, DoorRowsSkipped, FailedFaces;
         public List<Point2d> LostFacePts = new List<Point2d>();
         public List<string> LostFaceCenters = new List<string>();
@@ -614,9 +614,14 @@ namespace MeshPlugin
             // фильтром по жёсткости. Имени у жёсткости в текстовом формате нет —
             // комментарий уходит в файл легенды рядом с задачей.
             //
-            // Правило попадания — ЦЕНТР готового элемента (как у отверстий и тел
-            // пилонов), а не «целиком внутри» как у зон толщины: пометка ничего не
-            // портит, поэтому пограничный элемент лучше пометить, чем потерять.
+            // Правило попадания — ДОЛЯ ПЛОЩАДИ элемента внутри контура (порог
+            // MeshTol.MarkAreaShare). «Целиком внутри», как у зон толщины, не
+            // годится: границу пометки рисуют от руки, она режет краевые элементы,
+            // и они остались бы непомеченными. Частичной пометки не существует —
+            // жёсткость у элемента в ЛИРЕ одна, поэтому порог и решает, кому
+            // достаётся весь элемент. Площадь считается ТОЧНО (PolygonInsideShare
+            // по треугольникам контура), а не по центру элемента: у краевого
+            // элемента центр врёт в обе стороны.
             //
             // Блок стоит ПОСЛЕДНИМ и берёт только элементы с жёсткостью плиты
             // (el[1] == 1). Элемент может иметь в ЛИРЕ лишь ОДИН номер, и забрать
@@ -624,7 +629,7 @@ namespace MeshPlugin
             // расчёт — пометка на это права не имеет. Сколько таких элементов
             // область не получила, идёт в журнал: иначе инженер решил бы, что
             // выделил фильтром всю область.
-            int markElems = 0, markSkipped = 0;
+            int markElems = 0, markSkipped = 0, markPartial = 0;
             if (input.MarkZones.Count > 0)
             {
                 // Вложенная (меньшая) область перебивает внешнюю — то же правило,
@@ -634,18 +639,98 @@ namespace MeshPlugin
                 var markStiffIds = new Dictionary<string, int>();
                 var markCounts = new Dictionary<string, int>();
 
+                // Контур раскладывается на треугольники ОДИН раз: по ним считается
+                // точная площадь попавшей части каждого элемента. Контур, который
+                // не разложился (ear-clipping сдался), обслуживается по центру
+                // элемента — грубее, зато пометка не теряется молча.
+                var markTris = new List<List<Point2d[]>>();
+                var markIdx = new List<BboxIndex>();
+                var markBox = new List<double[]>();   // габарит контура: x0 y0 x1 y1
+                int markNoTriangulation = 0;
+                foreach (var mz in marksBySize)
+                {
+                    double bx0 = double.MaxValue, by0 = double.MaxValue;
+                    double bx1 = double.MinValue, by1 = double.MinValue;
+                    foreach (var mp in mz.Poly)
+                    {
+                        if (mp.X < bx0) bx0 = mp.X;
+                        if (mp.X > bx1) bx1 = mp.X;
+                        if (mp.Y < by0) by0 = mp.Y;
+                        if (mp.Y > by1) by1 = mp.Y;
+                    }
+                    markBox.Add(new double[] { bx0, by0, bx1, by1 });
+
+                    int failedMark = 0;
+                    var tris = TriangulateSimplePolygon(mz.Poly, ref failedMark);
+                    if (failedMark > 0 || tris.Count == 0)
+                    {
+                        markNoTriangulation++;
+                        markTris.Add(null);
+                        markIdx.Add(null);
+                        continue;
+                    }
+                    // Против часовой: ClipPolygonAgainstEdge считает внутренней
+                    // сторону с неотрицательным векторным произведением.
+                    var ccw = new List<Point2d[]>(tris.Count);
+                    var index = new BboxIndex(MeshTol.MinElementSize);
+                    foreach (var t in tris)
+                    {
+                        var tri = new List<Point2d>(t);
+                        if (PolygonArea(tri) < 0) tri.Reverse();
+                        index.AddPolygon(ccw.Count, tri);
+                        ccw.Add(tri.ToArray());
+                    }
+                    markTris.Add(ccw);
+                    markIdx.Add(index);
+                }
+
                 for (int i = 0; i < slabElemCount; i++)
                 {
                     var el = elements[i];
-                    double cx = 0, cy = 0;
-                    int vcount = el.Length - 2;
-                    for (int k = 2; k < el.Length; k++) { cx += nodes3[el[k]][0]; cy += nodes3[el[k]][1]; }
-                    Point2d ec = new Point2d(cx / vcount, cy / vcount);
+                    var elPoly = new List<Point2d>();
+                    for (int k = 2; k < el.Length; k++)
+                        elPoly.Add(new Point2d(nodes3[el[k]][0], nodes3[el[k]][1]));
+                    // КЭ 44 записан «змейкой» (face0 face1 face3 face2): для площади
+                    // порядок обязательно вернуть к обходу, иначе выйдет «бабочка»
+                    // с нулевой площадью и доля попадания станет бессмысленной.
+                    if (elPoly.Count == 4)
+                    {
+                        Point2d swap = elPoly[2]; elPoly[2] = elPoly[3]; elPoly[3] = swap;
+                    }
+
+                    double ex0 = double.MaxValue, ey0 = double.MaxValue;
+                    double ex1 = double.MinValue, ey1 = double.MinValue;
+                    foreach (var ep in elPoly)
+                    {
+                        if (ep.X < ex0) ex0 = ep.X;
+                        if (ep.X > ex1) ex1 = ep.X;
+                        if (ep.Y < ey0) ey0 = ep.Y;
+                        if (ep.Y > ey1) ey1 = ep.Y;
+                    }
 
                     MarkZone hit = null;
-                    foreach (var mz in marksBySize)
-                        if (IsPointInPolygon(ec, mz.Poly)) { hit = mz; break; }
-                    if (hit == null) continue;
+                    double bestShare = 0.0;
+                    for (int m = 0; m < marksBySize.Count; m++)
+                    {
+                        // Габарит контура мимо габарита элемента — считать нечего.
+                        var bb = markBox[m];
+                        if (ex1 < bb[0] || ex0 > bb[2] || ey1 < bb[1] || ey0 > bb[3]) continue;
+
+                        double share;
+                        if (markIdx[m] != null)
+                            share = PolygonInsideShare(elPoly, markTris[m], markIdx[m]);
+                        else
+                            share = IsPointInPolygon(PolygonCentroid(elPoly), marksBySize[m].Poly) ? 1.0 : 0.0;
+                        if (share > bestShare) bestShare = share;
+                        if (share >= MeshTol.MarkAreaShare) { hit = marksBySize[m]; break; }
+                    }
+                    if (hit == null)
+                    {
+                        // Элемент задет контуром, но порога не добрал: в журнал,
+                        // иначе инженер не поймёт, почему край области «рваный».
+                        if (bestShare > 0.0) markPartial++;
+                        continue;
+                    }
                     if (el[1] != 1) { markSkipped++; continue; }
 
                     int stiffId;
@@ -662,13 +747,19 @@ namespace MeshPlugin
                 }
 
                 res.Log.Add($"\nПомеченные области: контуров {input.MarkZones.Count}, элементов плиты помечено {markElems}"
+                    + $" (порог попадания — {MeshTol.MarkAreaShare * 100:0.#}% площади элемента внутри контура)"
+                    + (markPartial > 0 ? $", задето контуром но порога не добрало {markPartial}" : "")
                     + (markSkipped > 0 ? $", пропущено со своей жёсткостью (тело пилона или зона толщины) {markSkipped}" : "")
                     + ". Параметры жёсткости те же, что у плиты — расчёт не меняется.\n");
+                if (markNoTriangulation > 0)
+                    res.Log.Add($"\nВНИМАНИЕ: контуров пометки, не разложенных на треугольники: {markNoTriangulation} —"
+                        + " для них попадание определено по центру элемента, край области может оказаться рваным. Упростите контур.\n");
                 foreach (var pair in markStiffIds)
                     res.Log.Add($"  «{pair.Key}» = жёсткость №{pair.Value}, элементов {markCounts[pair.Key]}\n");
             }
             res.MarkElems = markElems;
             res.MarkElemsSkipped = markSkipped;
+            res.MarkElemsPartial = markPartial;
 
             // Запись файла (кодировка 1251, числа с точкой, координаты мм -> м).
             // Имя задачи в документе 0 обязано совпадать с именем файла — иначе

@@ -405,6 +405,41 @@ namespace MeshPlugin
             return result;
         }
 
+        // Какая доля площади элемента лежит внутри простого (в том числе вогнутого)
+        // контура. Клипать элемент прямо по контуру НЕЛЬЗЯ: Sutherland-Hodgman
+        // (ClipPolygonToConvexCell) верен только для ВЫПУКЛОЙ области отсечения, а
+        // контур пометки бывает Г- и П-образным. Поэтому контур приходит уже
+        // разложенным на треугольники: они выпуклые, не перекрываются и вместе
+        // покрывают контур ровно, значит сумма пересечений с ними — ТОЧНАЯ площадь
+        // попавшей части, без оценок и выборок по точкам.
+        //
+        // Треугольники обязаны быть против часовой: ClipPolygonAgainstEdge считает
+        // внутренней сторону с неотрицательным векторным произведением.
+        private double PolygonInsideShare(List<Point2d> element, List<Point2d[]> clipTriangles, BboxIndex index)
+        {
+            double full = Math.Abs(PolygonArea(element));
+            if (full <= MeshTol.MinArea) return 0.0;
+
+            double x0 = double.MaxValue, y0 = double.MaxValue;
+            double x1 = double.MinValue, y1 = double.MinValue;
+            foreach (var p in element)
+            {
+                if (p.X < x0) x0 = p.X;
+                if (p.X > x1) x1 = p.X;
+                if (p.Y < y0) y0 = p.Y;
+                if (p.Y > y1) y1 = p.Y;
+            }
+
+            double inside = 0.0;
+            foreach (int t in index.Query(x0 - MeshTol.OnSegment, y0 - MeshTol.OnSegment,
+                x1 + MeshTol.OnSegment, y1 + MeshTol.OnSegment))
+            {
+                var part = ClipPolygonToConvexCell(element, clipTriangles[t]);
+                if (part.Count >= 3) inside += Math.Abs(PolygonArea(part));
+            }
+            return inside / full;
+        }
+
         private List<Point2d> CleanupPolygon(List<Point2d> poly, double eps = MeshTol.OnSegment)
         {
             var result = new List<Point2d>();
