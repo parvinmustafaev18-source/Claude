@@ -86,6 +86,9 @@ call build.bat /nopause
 if errorlevel 2 (
     echo.
     echo Visual Studio здесь нет - ставлю готовую сборку из dist\.
+    echo Если install.bat предупредит, что сборка старше кода - новых команд
+    echo в ней не будет: соберите на компьютере с Visual Studio и запустите
+    echo update.bat ТАМ, он отправит свежую DLL на GitHub.
     echo.
     call install.bat /nopause
     if errorlevel 1 goto :fail
@@ -94,7 +97,8 @@ if errorlevel 2 (
 if errorlevel 1 goto :fail
 
 rem --- 5. Отправить собранную DLL, чтобы её увидели другие компьютеры ---
-echo Отправляю на GitHub...
+echo Отправляю на GitHub (вместе с собранной DLL из dist\ - её получат
+echo компьютеры без Visual Studio)...
 git add -A
 git diff --cached --quiet
 if errorlevel 1 (
