@@ -297,6 +297,7 @@ namespace MeshPlugin
                 || layer == HoleLayerName
                 || layer == PylonOutlineLayerName
                 || IsThickLayer(layer)
+                || IsLoadLayer(layer)
                 || layer == HelpLayerName
                 || IsColumnLayer(layer);
         }

@@ -31,6 +31,11 @@ namespace MeshPlugin
         // Геометрию схемы это не меняет — только номер жёсткости у этих элементов.
         public List<ThickZone> ThickZones = new List<ThickZone>();
 
+        // Области загружения (слои MESH_LOAD(Q-...)): элементы плиты, чей центр
+        // попал внутрь контура, получают равномерно распределённую нагрузку в т/м².
+        // Геометрию схемы это не меняет — только строки в документе нагрузок.
+        public List<LoadZone> LoadZones = new List<LoadZone>();
+
         // Стены: исходные отрезки и их свойства (индексы совпадают).
         public List<Point2d[]> WallOrig = new List<Point2d[]>();
         public List<double> WallThickness = new List<double>();
@@ -79,6 +84,8 @@ namespace MeshPlugin
         public int RectCount, QuadCount, TriCount;
         public int WallElemCount, BarCount, FanFaces, SpikeFans, MultiSpikeFaces;
         public int HoleElemsRemoved, PylonBodyElems, PylonBodyStiffId;
+        public int LoadedElems;                                // пластин под нагрузкой
+        public double LoadTotalForce;                          // сумма нагрузок, т (для сверки с ЛИРОЙ)
         public int DoorJambSplits, DoorPiers, DoorRowsSkipped, FailedFaces;
         public List<Point2d> LostFacePts = new List<Point2d>();
         public List<string> LostFaceCenters = new List<string>();
@@ -97,6 +104,7 @@ namespace MeshPlugin
             var holePolys = input.HolePolys;
             var pylonRects = input.PylonRects;
             var thickZones = input.ThickZones;
+            var loadZones = input.LoadZones;
             var wallOrig = input.WallOrig;
             var wallOrigThickness = input.WallThickness;
             var wallOrigIsPylon = input.WallIsPylon;
@@ -457,6 +465,52 @@ namespace MeshPlugin
             double holesArea;
             double targetArea = SlabTargetArea(contourPts, holePolys, out holesArea);
 
+            // РАВНОМЕРНО РАСПРЕДЕЛЁННАЯ НАГРУЗКА ПО ОБЛАСТЯМ ЗАГРУЖЕНИЯ.
+            // Признак тот же, что у толщины и тела пилона: ЦЕНТР готового элемента
+            // внутри контура области. Границы областей лежат ровно по рёбрам
+            // элементов — врезал LIRLOAD, узлы при этом не двигались.
+            //
+            // ПОРЯДОК ВАЖЕН: считается здесь, пока в elements лежат ТОЛЬКО пластины
+            // плиты. Номер элемента в документе 1 — это его порядок в списке, и
+            // стены со стержнями, которые добавляются ниже, номера пластин не
+            // сдвинут. Нагрузка на элементы стен и пилонов не ставится: область
+            // нарисована в плане, у вертикальной оболочки такой нагрузки нет.
+            var loadByElem = new Dictionary<int, double>();   // № КЭ (с 1) -> т/м²
+            var loadAreaByValue = new Dictionary<double, double>();   // т/м² -> площадь, мм²
+            var loadElemsByValue = new Dictionary<double, int>();     // т/м² -> число КЭ
+            if (loadZones.Count > 0)
+            {
+                // Области по возрастанию площади: вложенная (меньшая) перебивает
+                // внешнюю. Нагрузки НЕ складываются — то же правило, что у толщины,
+                // иначе «область внутри области» означала бы две разные вещи
+                // в зависимости от порядка рисования.
+                var zonesBySize = new List<LoadZone>(loadZones);
+                zonesBySize.Sort((p, q) => Math.Abs(PolygonArea(p.Poly)).CompareTo(Math.Abs(PolygonArea(q.Poly))));
+
+                for (int i = 0; i < slabElemCount; i++)
+                {
+                    var el = elements[i];
+                    double cx = 0, cy = 0;
+                    int vcount = el.Length - 2;
+                    for (int k = 2; k < el.Length; k++) { cx += nodes3[el[k]][0]; cy += nodes3[el[k]][1]; }
+                    Point2d ec = new Point2d(cx / vcount, cy / vcount);
+
+                    foreach (var z in zonesBySize)
+                    {
+                        if (!IsPointInPolygon(ec, z.Poly)) continue;
+
+                        double q = Math.Round(z.LoadTm2, 4);
+                        loadByElem[i + 1] = q;
+                        double a = ElementPlanArea(el, nodes3);
+                        loadAreaByValue[q] = (loadAreaByValue.ContainsKey(q) ? loadAreaByValue[q] : 0.0) + a;
+                        loadElemsByValue[q] = (loadElemsByValue.ContainsKey(q) ? loadElemsByValue[q] : 0) + 1;
+                        break;
+                    }
+                }
+            }
+            double loadTotalForce = 0.0;
+            foreach (var kv in loadAreaByValue) loadTotalForce += kv.Key * kv.Value * 1e-6;
+
             // Стены -> вертикальные оболочки КЭ 44: кусок стены после разрезки узлами
             // сетки выдавливается вверх на высоту этажа. Шаг по высоте держится ровно
             // wallStep, остаток высоты идёт отдельным (последним) рядом: 3500/300 =
@@ -621,6 +675,37 @@ namespace MeshPlugin
             }
             sb.AppendLine(")");
 
+            // ---- НАГРУЗКИ НА ПЛАСТИНЫ -------------------------------------------
+            // ВНИМАНИЕ: это ЕДИНСТВЕННОЕ место экспорта, формат которого НЕ
+            // подтверждён импортом в ЛИРУ. Документы 0/1/3/4 проверены на реальных
+            // задачах; документ нагрузок пишется впервые, номер документа и код вида
+            // нагрузки взяты по описанию формата, а не снятые с живого файла. Если
+            // ЛИРА откажется читать задачу, править ЗДЕСЬ — три константы ниже;
+            // вся остальная цепочка (область -> разрез сетки -> элементы ->
+            // значения) от формата не зависит и уже проверена.
+            //
+            // Блок пишется ТОЛЬКО когда есть нагруженные пластины: без областей
+            // загружения текст задачи остаётся прежним побайтно, то есть на старых
+            // планах выгрузка не меняется вообще.
+            const int LoadDocNumber = 6;            // документ нагрузок
+            const int LoadCaseNumber = 1;           // загружение 1 (имя объявлено в документе 0, ключ 39)
+            const int LoadTypeUniformPlateZ = 24;   // равномерная по площади пластины, вдоль Z вниз
+            if (loadByElem.Count > 0)
+            {
+                sb.AppendLine("( " + LoadDocNumber + "/");
+                sb.AppendLine(LoadCaseNumber + "/");
+                // По возрастанию номера КЭ: так же, как идут документы 1 и 4, —
+                // файл остаётся читаемым глазами и сверяемым с номерами из ЛИРЫ.
+                for (int n = 1; n <= slabElemCount; n++)
+                {
+                    double q;
+                    if (!loadByElem.TryGetValue(n, out q)) continue;
+                    sb.AppendLine(n + " " + LoadTypeUniformPlateZ + " "
+                        + q.ToString("0.#####", inv) + " /");
+                }
+                sb.AppendLine(")");
+            }
+
             res.TaskText = sb.ToString();
 
             // Легенда: в текстовом формате ЛИРЫ у жёсткости нет ни имени, ни
@@ -636,6 +721,24 @@ namespace MeshPlugin
             foreach (var cd in colStiffDims)
                 lg.AppendLine("  " + (int)cd[2] + " = пилон-стержень "
                     + cd[0].ToString("0.#", inv) + "x" + cd[1].ToString("0.#", inv));
+            if (loadByElem.Count > 0)
+            {
+                lg.AppendLine();
+                lg.AppendLine("ОБЛАСТИ ЗАГРУЖЕНИЯ (документ " + LoadDocNumber
+                    + ", загружение " + LoadCaseNumber + ")");
+                var loadValues = new List<double>(loadAreaByValue.Keys);
+                loadValues.Sort();
+                foreach (double q in loadValues)
+                {
+                    double aM2 = loadAreaByValue[q] * 1e-6;
+                    lg.AppendLine("  " + q.ToString("0.####", inv) + " т/м²: пластин "
+                        + loadElemsByValue[q] + ", площадь " + aM2.ToString("0.###", inv)
+                        + " м², сумма " + (q * aM2).ToString("0.###", inv) + " т");
+                }
+                lg.AppendLine("  ИТОГО нагрузки: " + loadTotalForce.ToString("0.###", inv)
+                    + " т — это число должна показать ЛИРА как сумму загружения "
+                    + LoadCaseNumber + ".");
+            }
             res.LegendText = lg.ToString();
 
             int rectCount = 0, quadCount = 0, triCount = 0;
@@ -655,6 +758,14 @@ namespace MeshPlugin
             // Главная проверка результата: покрывают ли пластины плиту целиком.
             res.Log.AddRange(AreaBalanceLines(slabArea, targetArea, holesArea, slabElemCount));
 
+            if (loadZones.Count > 0)
+            {
+                res.Log.Add($"\nОбласти загружения: контуров {loadZones.Count}, нагружено пластин {loadByElem.Count}, сумма нагрузки {loadTotalForce:0.###} т (документ {LoadDocNumber}, загружение {LoadCaseNumber}). Разбивка по значениям — в легенде.\n");
+                if (loadByElem.Count == 0)
+                    res.Log.Add("ВНИМАНИЕ: ни одна пластина не попала в области загружения — нагрузка в задачу НЕ записана. Проверьте, что области лежат внутри плиты и что сетка через них проведена (LIRLOAD после LIRBUILD).\n");
+                res.Log.Add("Формат документа нагрузок в ЛИРЕ вживую не проверялся: если задача не читается, дело в этом документе — остальное (разрез сетки, номера элементов, значения) от формата не зависит.\n");
+            }
+
             // Раскладка номеров — чтобы сверить с тем, что показала ЛИРА.
             res.Log.Add($"Жёсткости: 1 = плита H-{thicknessMm:0.#}\n");
             foreach (int sid in wallStiffOrdered)
@@ -667,6 +778,8 @@ namespace MeshPlugin
             res.Nodes3 = nodes3;
             res.Elements = elements;
             res.SlabElemCount = slabElemCount;
+            res.LoadedElems = loadByElem.Count;
+            res.LoadTotalForce = loadTotalForce;
             res.SlabArea = slabArea;
             res.TargetArea = targetArea;
             res.HolesArea = holesArea;
