@@ -1,7 +1,7 @@
 # Команды плагина
 
 Порядок на плане: LIRLAYERS → LIRWALLAXIS/LIRWALLS → LIRDOORS →
-LIRPYLON → (LIRWALLJOIN) → LIRCHECK → LIRBUILD → (LIRREMESH, LIRTHICK, LIRLOAD) →
+LIRPYLON → (LIRWALLJOIN) → LIRCHECK → LIRBUILD → (LIRREMESH, LIRTHICK) →
 LIREXPORT.
 
 Все команды инженера начинаются на `LIR` — переименованы 20.09.2026, перед выдачей
@@ -31,7 +31,6 @@ LIREXPORT.
 | LIRFIX | Commands.cs | выбор + ключ Fix/Unfix | слой с меткой ` FIX`; снап такие объекты не трогает, их оси идут жёсткими целями сетки |
 | LIRREMESH | LocalMesh.cs | замкнутый контур области, шаг | старая сетка внутри области стёрта, построена новая, сшита с окружающей по узлам |
 | LIRTHICK | ThickZone.cs | замкнутые контуры зон, толщина | контур → `MESH_THICK(H-t)`; пересекаемые рёбра сетки разрезаются, границы добавляются без сдвига узлов |
-| LIRLOAD | LoadZone.cs | замкнутые контуры областей, нагрузка т/м² | контур → `MESH_LOAD(Q-q)`; разрез сетки тем же `SplitMeshAtThickBoundaries`; экспорт пишет нагрузку на пластины внутри |
 | LIRCHECK | Check.cs:23 | контур плиты, шаг (300) | список всех замечаний по чертежу + круги в `ПРОБЛЕМА`; ничего не строит |
 | LIREXPORT | LiraExport.cs:18 | — | .txt для ЛИРА-САПР (расчёт — `BuildExportCore`, ExportCore.cs; см. skill `lira-sapr-mesh-export`) |
 
