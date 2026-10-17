@@ -239,6 +239,23 @@ namespace MeshPlugin
                 : "";
         }
 
+        // Область равномерно распределённой нагрузки (LIRLOAD): контур, внутри
+        // которого пластины плиты получают нагрузку в т/м². Интенсивность стоит в
+        // имени слоя — видимое состояние, а не XData (то же решение, что у LIRMARK).
+        // Имя начинается с MESH_, поэтому слой попадает под IsMarkLayer и LIRLAYERS
+        // его не перекрашивает; в IsServiceLayer он внесён отдельно, иначе
+        // MovePolylinesToHoleLayer превратил бы область в отверстие.
+        // ЖЁСТКОСТИ область НЕ трогает: нагрузка уходит документами 6 и 7.
+        private const string LoadZoneLayerPrefix = "MESH_LOAD(Q-";
+        private static bool IsLoadZoneLayer(string layer)
+        {
+            return !string.IsNullOrEmpty(layer)
+                && layer.StartsWith("MESH_LOAD(", StringComparison.OrdinalIgnoreCase);
+        }
+        private static readonly System.Text.RegularExpressions.Regex LoadZoneValueRegex =
+            new System.Text.RegularExpressions.Regex(@"^MESH_LOAD\(Q-([\d.,]+)\)$",
+                System.Text.RegularExpressions.RegexOptions.Compiled | System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+
         // Грани, не попавшие в расчётную схему ЛИРЫ (LIREXPORT). Слой свой, а не
         // ПРОБЛЕМА: круг с подписью показывает ТОЧКУ и причину, а инженеру нужна
         // ФОРМА — какой именно кусок плиты остался без элементов и будет дырой в
@@ -352,6 +369,7 @@ namespace MeshPlugin
                 || layer == PylonOutlineLayerName
                 || IsSlabZoneLayer(layer)
                 || IsMarkZoneLayer(layer)
+                || IsLoadZoneLayer(layer)
                 || layer == HelpLayerName
                 || IsColumnLayer(layer);
         }

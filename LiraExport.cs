@@ -331,6 +331,12 @@ namespace MeshPlugin
                 if (markZonesSkipped > 0)
                     ed.WriteMessage($"\nПомеченных областей пропущено: {markZonesSkipped} — нужна замкнутая простая полилиния без дуг в плоскости XY.\n");
 
+                // Области загружения (LIRLOAD): на граф и на жёсткости не влияют,
+                // дают только строки документов 6 и 7 — нагрузку на пластины.
+                var loadZones = GetLoadZones(tr, db, out int loadZonesSkipped);
+                if (loadZonesSkipped > 0)
+                    ed.WriteMessage($"\nОбластей загружения пропущено: {loadZonesSkipped} — нужна замкнутая простая полилиния без дуг в плоскости XY и разбираемая нагрузка в имени слоя.\n");
+
                 // Контуры тел пилонов. В планарный граф они НЕ добавляются: их грани уже
                 // лежат в сетке (LIRBUILD отпечатывает контур), а лишние рёбра дали
                 // бы наложение. Нужны только для того, чтобы отличить элементы плиты,
@@ -356,6 +362,7 @@ namespace MeshPlugin
                     PylonRects = pylonRects,
                     SlabZones = ReadSlabZones(tr, db),
                     MarkZones = markZones,
+                    LoadZones = loadZones,
                     // Тот же набор рёбер, по которому LIRZONE принимал контур
                     // (сетка, оси стен, контуры плит). Отдельный проход по
                     // чертежу намеренный: граф экспорта содержит только указанный
