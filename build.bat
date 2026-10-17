@@ -24,14 +24,14 @@ if exist "ThickZone.cs" (
     echo.
     echo Сборка с неё отнимет команды LIRZONE, LIRMARK, LIRSPLIT и LIRSHORT:
     echo в той линии их нет. Переключитесь на рабочую и повторите:
-    echo     git checkout -B work origin/stable/without-lirthick
+    echo     git checkout -B last-version origin/last-version
     goto :fail
 )
 if not exist "SlabZones.cs" (
     echo [СТОП] В папке нет SlabZones.cs - это не рабочая линия.
     echo.
-    echo Рабочая линия - stable/without-lirthick. Переключитесь и повторите:
-    echo     git checkout -B work origin/stable/without-lirthick
+    echo Рабочая линия - last-version. Переключитесь и повторите:
+    echo     git checkout -B last-version origin/last-version
     goto :fail
 )
 

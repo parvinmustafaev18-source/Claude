@@ -1,7 +1,7 @@
 #!/bin/sh
 # Напоминание о единственной рабочей линии. Вызывается хуком SessionStart:
 # то, что он печатает, попадает в контекст сессии Claude ДО первой правки.
-TARGET=stable/without-lirthick
+TARGET=last-version
 echo "ПРАВИЛО ВЕТОК (нарушалось 17.10.2026, стоило пользователю дня):"
 echo "  Единственная рабочая линия — $TARGET. На рабочем компьютере стоит сборка"
 echo "  с неё, update.bat перематывает только её. Правка, положенная в main или в"
@@ -18,7 +18,7 @@ if command -v git >/dev/null 2>&1; then
             echo "  Проверка: эта ветка содержит $TARGET — работать можно."
         else
             echo "  ВНИМАНИЕ: эта ветка НЕ содержит $TARGET. Прежде чем что-то править,"
-            echo "  переключитесь: git checkout -B work origin/$TARGET"
+            echo "  переключитесь: git checkout -B "$TARGET" origin/"$TARGET""
         fi
     fi
 fi

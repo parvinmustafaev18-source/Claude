@@ -2,7 +2,7 @@
 rem ВНИМАНИЕ: файл сохранён в кодировке CP866 с переводами строк CRLF.
 rem В UTF-8 пересохранять нельзя - cmd.exe разобьёт кириллицу и файл сломается.
 rem
-rem Обновлять только stable/without-lirthick, собрать плагин и отправить DLL
+rem Обновлять только last-version, собрать плагин и отправить DLL
 rem обратно в эту же ветку. main и ветки Claude не подмешиваются.
 rem Где нет Visual Studio - ставит готовую сборку из dist\.
 chcp 866 >nul
@@ -18,7 +18,7 @@ exit /b 1
 :run
 cd /d "%~2"
 if errorlevel 1 goto :fail
-set "TARGET=stable/without-lirthick"
+set "TARGET=last-version"
 
 echo.
 echo ==========================================
