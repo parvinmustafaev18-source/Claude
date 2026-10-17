@@ -105,6 +105,7 @@
     <Compile Include="LocalSplitCore.cs" />
     <Compile Include="MarkZone.cs" />
     <Compile Include="LoadZone.cs" />
+    <Compile Include="LineLoad.cs" />
     <Compile Include="MeshCore.cs" />
     <Compile Include="QuadMesh.cs" />
     <Compile Include="SelfCheck.cs" />

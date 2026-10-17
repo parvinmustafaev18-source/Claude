@@ -32,6 +32,9 @@ namespace MeshPlugin
         // Области загружения (LIRLOAD): равномерно распределённая нагрузка на
         // пластины плиты. Жёсткости НЕ трогают — уходят документами 6 и 7.
         public List<LoadZone> LoadZones = new List<LoadZone>();
+        // Отрезки линейной нагрузки (LIRLINE): вдоль каждого по узлам сетки
+        // встают стержни КЭ 10 с околонулевой жёсткостью, нагрузка ложится на них.
+        public List<LineLoadSeg> LineLoads = new List<LineLoadSeg>();
         // Рёбра ТОЛЬКО для проверки границ зон: сетка, оси стен и контуры плит со
         // всех слоёв FOUNDATION_SLABS(, как их читает LIRZONE при регистрации. В
         // планарный граф не попадают — иначе экспорт получил бы лишние пластины.
@@ -77,7 +80,8 @@ namespace MeshPlugin
         // Готовые тексты: их остаётся только записать в файлы.
         public string TaskText = "";
         public string LegendText = "";
-        public int LoadedElems;          // пластин под нагрузкой (LIRLOAD)
+        public int LineBars;             // стержней-носителей линейной нагрузки (LIRLINE)
+        public int LoadedElems;          // элементов под нагрузкой (LIRLOAD + LIRLINE)
         public double LoadTotalForce;    // сумма нагрузок, т — число для сверки с ЛИРОЙ
 
         // Схема задачи.
@@ -905,8 +909,92 @@ namespace MeshPlugin
             }
             double loadTotalForce = 0.0;
             foreach (var kv in loadAreaByValue) loadTotalForce += kv.Key * kv.Value * 1e-6;
+
+            // ЛИНЕЙНАЯ НАГРУЗКА (LIRLINE) — стержни-носители по узлам сетки.
+            //
+            // Отрезок инженера идёт по узлам сетки; между соседними узлами на нём
+            // ставится стержень КЭ 10 с околонулевой жёсткостью, и нагрузка кладётся
+            // на эти стержни тем же видом, что и на пластины (код 16, направление 3).
+            // В плиту она уходит через ОБЩИЕ узлы, поэтому стержень ничего не несёт
+            // сам: его дело — быть местом, к которому ЛИРА привязывает линейную
+            // нагрузку. Жёсткость взята с эталона пользователя: S0 1 1 1 + RO 1e-008.
+            //
+            // Почему не пересчёт в узловые силы: так нагрузка остаётся в ЛИРЕ
+            // НАСТОЯЩЕЙ линейной — её видно, можно выделить и поправить, и она
+            // правильно идёт в РСУ. Цена — 2-3 лишних элемента на метр линии.
+            //
+            // Блок стоит ПОСЛЕ всех элементов схемы: номера стержней продолжают
+            // документ 1, а значит ссылки из документа 6 остаются верными.
+            int lineBarStiffId = 0, lineBars = 0, lineSegsSkipped = 0;
+            double lineTotalForce = 0.0, lineMaxBar = 0.0;
+            var lineLenByValue = new Dictionary<double, double>();   // т/м -> длина, мм
+            if (input.LineLoads.Count > 0)
+            {
+                // Узлы ищутся по сетке пространственного индекса: отрезков обычно
+                // десятки, узлов сотни тысяч, перебор по всем был бы квадратичным.
+                var nodeGrid = new SpatialGrid(500.0);
+                for (int i = 0; i < nodes.Count; i++) nodeGrid.Add(i, nodes[i]);
+
+                foreach (var seg in input.LineLoads)
+                {
+                    double dx = seg.B.X - seg.A.X, dy = seg.B.Y - seg.A.Y;
+                    double len = Math.Sqrt(dx * dx + dy * dy);
+                    if (len <= MeshTol.NodeMerge) { lineSegsSkipped++; continue; }
+
+                    // Кандидаты: узлы в полосе вдоль отрезка. Шагаем по нему с шагом
+                    // радиуса поиска, чтобы не пропустить ни одной ячейки индекса.
+                    var seen = new HashSet<int>();
+                    double step = 400.0;
+                    int steps = (int)(len / step) + 1;
+                    for (int k = 0; k <= steps; k++)
+                    {
+                        double t = Math.Min(1.0, (k * step) / len);
+                        var p = new Point2d(seg.A.X + dx * t, seg.A.Y + dy * t);
+                        foreach (int idx in nodeGrid.QueryRadius(p, step))
+                            seen.Add(idx);
+                    }
+
+                    // Оставляем те, что лежат НА отрезке, и сортируем вдоль него.
+                    var onSeg = new List<KeyValuePair<double, int>>();
+                    foreach (int idx in seen)
+                    {
+                        Point2d q = nodes[idx];
+                        double t = ((q.X - seg.A.X) * dx + (q.Y - seg.A.Y) * dy) / (len * len);
+                        if (t < -1e-9 || t > 1.0 + 1e-9) continue;
+                        double px = seg.A.X + dx * t, py = seg.A.Y + dy * t;
+                        if (Math.Sqrt((q.X - px) * (q.X - px) + (q.Y - py) * (q.Y - py)) > MeshTol.OnSegment) continue;
+                        onSeg.Add(new KeyValuePair<double, int>(t, idx));
+                    }
+                    if (onSeg.Count < 2)
+                    {
+                        lineSegsSkipped++;
+                        res.Log.Add($"\nОтрезок линейной нагрузки ({seg.A.X:0.###}, {seg.A.Y:0.###}) -> ({seg.B.X:0.###}, {seg.B.Y:0.###}) мм:"
+                            + $" узлов сетки на нём {onSeg.Count}, нужно минимум 2. Нагрузка с него НЕ записана —"
+                            + " начертите отрезок по узлам сетки.\n");
+                        continue;
+                    }
+                    onSeg.Sort((u, v) => u.Key.CompareTo(v.Key));
+
+                    if (lineBarStiffId == 0) lineBarStiffId = nextStiff++;
+                    double q2 = Math.Round(seg.LoadTm, 4);
+                    for (int k = 0; k + 1 < onSeg.Count; k++)
+                    {
+                        Point2d p1 = nodes[onSeg[k].Value], p2 = nodes[onSeg[k + 1].Value];
+                        double barLen = p1.GetDistanceTo(p2);
+                        if (barLen <= MeshTol.NodeMerge) continue;   // совпавшие узлы
+                        elements.Add(new int[] { 10, lineBarStiffId,
+                            Node3(p1.X, p1.Y, 0.0), Node3(p2.X, p2.Y, 0.0) });
+                        loadByElem[elements.Count] = q2;             // номер в документе 1
+                        lineLenByValue[q2] = (lineLenByValue.ContainsKey(q2) ? lineLenByValue[q2] : 0.0) + barLen;
+                        if (barLen > lineMaxBar) lineMaxBar = barLen;
+                        lineBars++;
+                    }
+                }
+                foreach (var kv in lineLenByValue) lineTotalForce += kv.Key * kv.Value * 1e-3;
+            }
             res.LoadedElems = loadByElem.Count;
-            res.LoadTotalForce = loadTotalForce;
+            res.LoadTotalForce = loadTotalForce + lineTotalForce;
+            res.LineBars = lineBars;
 
             // Запись файла (кодировка 1251, числа с точкой, координаты мм -> м).
             // Имя задачи в документе 0 обязано совпадать с именем файла — иначе
@@ -955,6 +1043,15 @@ namespace MeshPlugin
                     + " " + roStr + "/");
                 sb.AppendLine(" 0 Mu 0.2/");
             }
+            if (lineBarStiffId > 0)
+            {
+                // Носитель линейной нагрузки: ничего не несёт и веса не даёт.
+                // Строки СНЯТЫ С ЭТАЛОНА ЛИРЫ (ПАРКИНГ_-11ЭТ), менять по памяти
+                // нельзя: сечение 1x1 см, E = 1, плотность 1e-008 (не ноль —
+                // на нулевой жёсткости решатель спотыкается).
+                sb.AppendLine(lineBarStiffId + " S0 1 1 1/");
+                sb.AppendLine(" 0 RO 1e-008/");
+            }
             sb.AppendLine(")");
 
             sb.AppendLine("( 4/");
@@ -997,13 +1094,18 @@ namespace MeshPlugin
             var loadRowByValue = new Dictionary<double, int>();
             if (loadByElem.Count > 0)
             {
-                var loadValuesOrdered = new List<double>(loadAreaByValue.Keys);
+                var loadValuesSet = new List<double>(loadAreaByValue.Keys);
+                foreach (var kv in lineLenByValue)
+                    if (!loadValuesSet.Contains(kv.Key)) loadValuesSet.Add(kv.Key);
+                var loadValuesOrdered = loadValuesSet;
                 loadValuesOrdered.Sort();
                 for (int r = 0; r < loadValuesOrdered.Count; r++)
                     loadRowByValue[loadValuesOrdered[r]] = r + 1;
 
                 sb.AppendLine("( 6/");
-                for (int n = 1; n <= slabElemCount; n++)
+                // По всем элементам: пластины плиты (LIRLOAD) и стержни-носители
+                // линейной нагрузки (LIRLINE) лежат в одном документе 1.
+                for (int n = 1; n <= elements.Count; n++)
                 {
                     double q;
                     if (!loadByElem.TryGetValue(n, out q)) continue;
@@ -1036,7 +1138,7 @@ namespace MeshPlugin
             if (loadByElem.Count > 0)
             {
                 lg.AppendLine();
-                lg.AppendLine("ОБЛАСТИ ЗАГРУЖЕНИЯ (документы 6 и 7, загружение " + LoadCaseNumber + ")");
+                lg.AppendLine("НАГРУЗКИ (документы 6 и 7, загружение " + LoadCaseNumber + ")");
                 var loadValues = new List<double>(loadAreaByValue.Keys);
                 loadValues.Sort();
                 foreach (double q in loadValues)
@@ -1047,7 +1149,15 @@ namespace MeshPlugin
                         + ", площадь " + aM2.ToString("0.###", inv) + " м²"
                         + ", сумма " + (q * aM2).ToString("0.###", inv) + " т");
                 }
-                lg.AppendLine("  ИТОГО нагрузки: " + loadTotalForce.ToString("0.###", inv)
+                foreach (var kv in lineLenByValue)
+                {
+                    double lenM = kv.Value * 1e-3;
+                    lg.AppendLine("  строка " + loadRowByValue[kv.Key] + " документа 7 = "
+                        + kv.Key.ToString("0.####", inv) + " т/м (линейная, стержни КЭ 10 жёсткости №"
+                        + lineBarStiffId + "): длина " + lenM.ToString("0.###", inv) + " м"
+                        + ", сумма " + (kv.Key * lenM).ToString("0.###", inv) + " т");
+                }
+                lg.AppendLine("  ИТОГО нагрузки: " + (loadTotalForce + lineTotalForce).ToString("0.###", inv)
                     + " т — это число должна показать ЛИРА как сумму загружения " + LoadCaseNumber + ".");
             }
             res.LegendText = lg.ToString();
@@ -1082,6 +1192,19 @@ namespace MeshPlugin
                 if (loadAreaByValue.Count > 1)
                     res.Log.Add($"ВНИМАНИЕ: разных интенсивностей {loadAreaByValue.Count}. Первое число строки документа 7 снято с эталона, где значение было одно, и читается двояко (номер строки либо число параметров). Проверьте в ЛИРЕ, что каждая область получила своё значение.\n");
                 res.Log.Add($"Сверьте в ЛИРЕ сумму загружения {LoadCaseNumber} с этим числом — это проверка всей цепочки.\n");
+            }
+
+            if (input.LineLoads.Count > 0)
+            {
+                double lineLenM = 0.0;
+                foreach (var kv in lineLenByValue) lineLenM += kv.Value * 1e-3;
+                res.Log.Add($"\nЛинейная нагрузка: отрезков {input.LineLoads.Count}, стержней-носителей КЭ 10 {lineBars}"
+                    + (lineBarStiffId > 0 ? $" (жёсткость №{lineBarStiffId}: S0 1 1 1, RO 1e-008 — ничего не несёт)" : "")
+                    + $", суммарная длина {lineLenM:0.###} м, сумма нагрузки {lineTotalForce:0.###} т"
+                    + (lineMaxBar > 0 ? $"; самый длинный стержень {lineMaxBar / 1000.0:0.###} м" : "") + "\n");
+                if (lineSegsSkipped > 0)
+                    res.Log.Add($"ВНИМАНИЕ: отрезков пропущено {lineSegsSkipped} — на них меньше двух узлов сетки. Нагрузка с них в задачу НЕ попала.\n");
+                res.Log.Add($"Сумма загружения {LoadCaseNumber} в ЛИРЕ обязана включать и её: всего по площади и линии {(loadTotalForce + lineTotalForce):0.###} т.\n");
             }
 
             // Раскладка номеров — чтобы сверить с тем, что показала ЛИРА.

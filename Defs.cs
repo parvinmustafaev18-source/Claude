@@ -256,6 +256,19 @@ namespace MeshPlugin
             new System.Text.RegularExpressions.Regex(@"^MESH_LOAD\(Q-([\d.,]+)\)$",
                 System.Text.RegularExpressions.RegexOptions.Compiled | System.Text.RegularExpressions.RegexOptions.IgnoreCase);
 
+        // Отрезок линейной нагрузки (LIRLINE): вдоль него экспорт ставит стержни
+        // КЭ 10 с околонулевой жёсткостью по узлам сетки и кладёт нагрузку на них.
+        // Интенсивность в т/м стоит в имени слоя, как у MESH_LOAD и MESH_ZONES.
+        private const string LineLoadLayerPrefix = "MESH_LINELOAD(Q-";
+        private static bool IsLineLoadLayer(string layer)
+        {
+            return !string.IsNullOrEmpty(layer)
+                && layer.StartsWith("MESH_LINELOAD(", StringComparison.OrdinalIgnoreCase);
+        }
+        private static readonly System.Text.RegularExpressions.Regex LineLoadValueRegex =
+            new System.Text.RegularExpressions.Regex(@"^MESH_LINELOAD\(Q-([\d.,]+)\)$",
+                System.Text.RegularExpressions.RegexOptions.Compiled | System.Text.RegularExpressions.RegexOptions.IgnoreCase);
+
         // Грани, не попавшие в расчётную схему ЛИРЫ (LIREXPORT). Слой свой, а не
         // ПРОБЛЕМА: круг с подписью показывает ТОЧКУ и причину, а инженеру нужна
         // ФОРМА — какой именно кусок плиты остался без элементов и будет дырой в
@@ -370,6 +383,7 @@ namespace MeshPlugin
                 || IsSlabZoneLayer(layer)
                 || IsMarkZoneLayer(layer)
                 || IsLoadZoneLayer(layer)
+                || IsLineLoadLayer(layer)
                 || layer == HelpLayerName
                 || IsColumnLayer(layer);
         }
