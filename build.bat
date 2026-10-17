@@ -13,6 +13,28 @@ echo   Сборка MeshPlugin
 echo ==========================================
 echo.
 
+rem --- 0. Линия разработки: собирать можно только рабочую ---
+rem Линия main (LIRTHICK/LIRREMESH) закрыта 17.10.2026. Сборка с неё молча
+rem отнимает LIRZONE/LIRMARK/LIRSPLIT/LIRSHORT - выглядит как "обновился, и
+rem пропали команды". Проверяем по ФАЙЛАМ, а не по имени ветки и не сверкой с
+rem GitHub: так проверка работает и без сети, и не ругается зря, когда рабочая
+rem ветка просто отстала на пару коммитов.
+if exist "ThickZone.cs" (
+    echo [СТОП] В папке лежит ThickZone.cs - это закрытая линия main с LIRTHICK.
+    echo.
+    echo Сборка с неё отнимет команды LIRZONE, LIRMARK, LIRSPLIT и LIRSHORT:
+    echo в той линии их нет. Переключитесь на рабочую и повторите:
+    echo     git checkout -B work origin/stable/without-lirthick
+    goto :fail
+)
+if not exist "SlabZones.cs" (
+    echo [СТОП] В папке нет SlabZones.cs - это не рабочая линия.
+    echo.
+    echo Рабочая линия - stable/without-lirthick. Переключитесь и повторите:
+    echo     git checkout -B work origin/stable/without-lirthick
+    goto :fail
+)
+
 rem --- 1. AutoCAD должен быть закрыт: иначе он держит старую DLL ---
 tasklist /FI "IMAGENAME eq acad.exe" 2>nul | find /I "acad.exe" >nul
 if not errorlevel 1 (
