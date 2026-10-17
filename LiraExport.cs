@@ -339,16 +339,6 @@ namespace MeshPlugin
                         (thickOpen > 0 ? $", пропущено незамкнутых: {thickOpen}" : "") +
                         (thickNoT > 0 ? $", пропущено без толщины в имени слоя: {thickNoT}" : "") + "\n");
 
-                // Области загружения (слои MESH_LOAD(Q-...)). В планарный граф они
-                // НЕ добавляются: их рёбра уже лежат в сетке — врезал LIRLOAD. Нужны
-                // затем, чтобы пластины внутри области получили нагрузку.
-                int loadOpen, loadNoQ;
-                var loadZones = GetLoadZones(tr, db, out loadOpen, out loadNoQ);
-                if (loadZones.Count > 0 || loadOpen > 0 || loadNoQ > 0)
-                    ed.WriteMessage($"\nОбластей загружения: {loadZones.Count}" +
-                        (loadOpen > 0 ? $", пропущено незамкнутых: {loadOpen}" : "") +
-                        (loadNoQ > 0 ? $", пропущено без нагрузки в имени слоя: {loadNoQ}" : "") + "\n");
-
                 // ---- РАСЧЁТ -------------------------------------------------------
                 // Всё, что дальше, считает ядро без чертежа (ExportCore.cs): планарный
                 // граф, элементы, жёсткости, выдавливание стен и текст задачи.
@@ -367,7 +357,6 @@ namespace MeshPlugin
                     HolePolys = holePolys,
                     PylonRects = pylonRects,
                     ThickZones = thickZones,
-                    LoadZones = loadZones,
                     WallOrig = wallOrig,
                     WallThickness = wallOrigThickness,
                     WallIsPylon = wallOrigIsPylon,

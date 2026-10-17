@@ -265,7 +265,6 @@ namespace MeshPlugin
                     // чтение этих слоёв другими командами.
                     if (!IsThickLayer(pl.Layer) &&
                         (pl.Layer == HoleLayerName || pl.Layer == PylonOutlineLayerName
-                         || IsLoadLayer(pl.Layer)
                          || IsSlabLayer(pl.Layer) || IsWallLayer(pl.Layer) || IsColumnLayer(pl.Layer)))
                     { skippedService++; continue; }
 
@@ -287,7 +286,7 @@ namespace MeshPlugin
                 ed.WriteMessage($"\nКонтуров принято на слой {zoneLayer}: {taken}" +
                     (skippedOpen > 0 ? $", пропущено незамкнутых: {skippedOpen}" : "") +
                     (skippedArcs > 0 ? $", пропущено с дугами (ЛИРА дуги не принимает): {skippedArcs}" : "") +
-                    (skippedService > 0 ? $", пропущено служебных контуров (отверстия/пилоны/области загружения/плита): {skippedService}" : "") +
+                    (skippedService > 0 ? $", пропущено служебных контуров (отверстия/пилоны/плита): {skippedService}" : "") +
                     (skippedInvalid > 0 ? $", пропущено вырожденных/самопересекающихся: {skippedInvalid}" : "") +
                     (skippedOutside > 0 ? $", пропущено участков вне плиты: {skippedOutside}" : "") + "\n");
 
