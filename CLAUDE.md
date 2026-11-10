@@ -53,7 +53,7 @@ AutoCAD и MSBuild нет — там только правки кода, оши�
 
 Плагин AutoCAD (.NET 4.8, x64, C# 7.3) — строит регулярную квадратную КЭ-сетку
 фундаментной плиты по чертежу и экспортирует схему в текстовый формат ЛИРА-САПР.
-Код: `partial class Commands` в Commands / QuadMesh / MeshCore / LiraExport /
+Код лежит в `src/` (с 10.11.2026; раньше — в корне): `partial class Commands` в Commands / QuadMesh / MeshCore / LiraExport /
 ExportCore / ExportSelfCheck / Geometry / SelfCheck / SelfTest / Check / Defs /
 BuildInfo, плюс `SpatialGrid.cs`
 (internal-классы `SpatialGrid`, `NodeIndex`, `NodeIndex3`).
@@ -575,6 +575,14 @@ AutoCAD API. Проверка на Windows: контур утолщения пе
 старый, с `LIRLAYERS` первым шагом). Правка `Commands.cs` — только строки текста, в
 облаке НЕ собиралась: `dist/MeshPlugin.dll` печатает прежний текст `LIRHELP`, пока
 плагин не пересобран на машине с AutoCAD.
+
+**Раскладка по папкам (10.11.2026) — в AutoCAD НЕ собиралась.** Все `.cs` и
+`Properties/` переехали в `src/`, `ПАМЯТКА.md` — в `docs/`, пустой `packages.config`
+удалён. `MeshPlugin.csproj` и `.sln` остались в корне НАМЕРЕННО: bat-скрипты,
+`bundle\` и `dist\` завязаны на корень, так что менять пришлось только пути
+`<Compile Include="src\...">`. Проверено скриптом, что все 16 путей существуют;
+`tests/thick-boundaries/prepare_tests.py` читает исходники из `src/`. Первая сборка
+после этой правки — проверка: если MSBuild не найдёт файл, смотреть `Compile Include`.
 
 **Где печатается баланс площадей.** `AreaBalanceLines` зовётся ТОЛЬКО из
 `ExportCore.cs` — в журнале `LIRBUILD` этой строки нет и не было. Увидеть её

@@ -6,7 +6,7 @@
     <Platform Condition=" '$(Platform)' == '' ">AnyCPU</Platform>
     <ProjectGuid>{AA3EE873-94F6-49CC-91B1-702CCE846147}</ProjectGuid>
     <OutputType>Library</OutputType>
-    <AppDesignerFolder>Properties</AppDesignerFolder>
+    <AppDesignerFolder>src\Properties</AppDesignerFolder>
     <RootNamespace>MeshPlugin</RootNamespace>
     <AssemblyName>MeshPlugin</AssemblyName>
     <TargetFrameworkVersion>v4.8</TargetFrameworkVersion>
@@ -93,25 +93,22 @@
     <Reference Include="System.Xml" />
   </ItemGroup>
   <ItemGroup>
-    <Compile Include="BuildInfo.cs" />
-    <Compile Include="Check.cs" />
-    <Compile Include="Commands.cs" />
-    <Compile Include="Defs.cs" />
-    <Compile Include="Geometry.cs" />
-    <Compile Include="ExportCore.cs" />
-    <Compile Include="ExportSelfCheck.cs" />
-    <Compile Include="LiraExport.cs" />
-    <Compile Include="MeshCore.cs" />
-    <Compile Include="QuadMesh.cs" />
-    <Compile Include="SelfCheck.cs" />
-    <Compile Include="SelfTest.cs" />
-    <Compile Include="SpatialGrid.cs" />
-    <Compile Include="LocalMesh.cs" />
-    <Compile Include="ThickZone.cs" />
-    <Compile Include="Properties\AssemblyInfo.cs" />
-  </ItemGroup>
-  <ItemGroup>
-    <None Include="packages.config" />
+    <Compile Include="src\BuildInfo.cs" />
+    <Compile Include="src\Check.cs" />
+    <Compile Include="src\Commands.cs" />
+    <Compile Include="src\Defs.cs" />
+    <Compile Include="src\Geometry.cs" />
+    <Compile Include="src\ExportCore.cs" />
+    <Compile Include="src\ExportSelfCheck.cs" />
+    <Compile Include="src\LiraExport.cs" />
+    <Compile Include="src\MeshCore.cs" />
+    <Compile Include="src\QuadMesh.cs" />
+    <Compile Include="src\SelfCheck.cs" />
+    <Compile Include="src\SelfTest.cs" />
+    <Compile Include="src\SpatialGrid.cs" />
+    <Compile Include="src\LocalMesh.cs" />
+    <Compile Include="src\ThickZone.cs" />
+    <Compile Include="src\Properties\AssemblyInfo.cs" />
   </ItemGroup>
   <Import Project="$(MSBuildToolsPath)\Microsoft.CSharp.targets" />
   <!-- Свежая DLL копируется в autoloader-bundle: AutoCAD подхватывает плагин при
